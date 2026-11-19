@@ -1085,7 +1085,7 @@
     }
     const lead = document.getElementById("howto-lead");
     if (lead) {
-      lead.textContent = "Zones are set by where the chart sits versus its 200-week SMA:";
+      lead.innerHTML = "Zones are set by where the chart sits versus its <span class=\"nowrap\">200-week</span> SMA:";
     }
     document.querySelectorAll(".unit-word").forEach(function (el) {
       el.textContent = unitLabel;
@@ -1096,9 +1096,9 @@
         h.textContent = COIN.name + " does not have enough history for the 200-week average yet.";
       } else {
         const z = ZONES[d.liveZone];
-        h.innerHTML = COIN.name + " is in " +
+        h.innerHTML = COIN.name + " is in the " +
           '<span class="zone z-' + z.id + ' nowrap">' + z.name + "</span>" +
-          "";
+          " zone";
       }
     }
     window.__PAGE = {

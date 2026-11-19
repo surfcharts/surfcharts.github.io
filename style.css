@@ -508,7 +508,7 @@ body.share-only .wave-line { display: none; }
 }
 
 /* How it works: three sections */
-.info h2.sub{margin-top:26px}
+.info h2.sub{margin-top:40px}
 .info-howto p.zl{margin-bottom:6px}
 .info-howto p.zl + h2.sub{margin-top:28px}
 .info-howto p.zl:last-of-type{margin-bottom:0}
@@ -519,3 +519,8 @@ body.share-only .wave-line { display: none; }
 .zc>span:first-child{font-weight:700}
 .zr{white-space:nowrap}
 @media (max-width:420px){.zcols{grid-template-columns:auto auto auto;justify-content:space-between;gap:6px}.zc>span:first-child{font-size:11px}.zr{font-size:11px;white-space:normal}}
+.info .disclaimer{font-size:16px;margin-top:6px;color:var(--ax)}
+@media (max-width:720px){.info .disclaimer{font-size:15px}}
+@media (max-width:360px){.info .disclaimer{font-size:14px}}
+.info h2{font-size:17px}
+.info .disclaimer{line-height:1.45}
