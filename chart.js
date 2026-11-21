@@ -40,18 +40,36 @@
     btc:  { id: "btc",  name: "BTC",  data: "data/btc-weekly.json",
             monthly: "data/btc-monthly.json",
             unit: "Price", liveUrl: BN + "BTCUSDT",  liveSrc: "Binance BTCUSDT" },
+    eth:  { id: "eth",  name: "ETH",  data: "data/eth-weekly.json",
+            monthly: "data/eth-monthly.json",
+            unit: "Price", liveUrl: BN + "ETHUSDT",  liveSrc: "Binance ETHUSDT" },
     ltc:  { id: "ltc",  name: "LTC",  data: "data/ltc-weekly.json",
             monthly: "data/ltc-monthly.json",
             unit: "Price", liveUrl: BN + "LTCUSDT",  liveSrc: "Binance LTCUSDT" },
     doge: { id: "doge", name: "DOGE", data: "data/doge-weekly.json",
             monthly: "data/doge-monthly.json",
             unit: "Price", liveUrl: BN + "DOGEUSDT", liveSrc: "Binance DOGEUSDT" },
+    dash: { id: "dash", name: "DASH", data: "data/dash-weekly.json",
+            monthly: "data/dash-monthly.json",
+            unit: "Price", liveUrl: BN + "DASHUSDT", liveSrc: "Binance DASHUSDT" },
+    zec:  { id: "zec",  name: "ZEC",  data: "data/zec-weekly.json",
+            monthly: "data/zec-monthly.json",
+            unit: "Price", liveUrl: BN + "ZECUSDT",  liveSrc: "Binance ZECUSDT" },
     totales: { id: "totales", name: "TOTALES", data: "data/totales-weekly.json",
             monthly: "data/totales-monthly.json",
             unit: "Market cap", liveUrl: null, liveSrc: "" },
     others: { id: "others", name: "OTHERS", data: "data/others-weekly.json",
             monthly: "data/others-monthly.json",
             unit: "Market cap", liveUrl: null, liveSrc: "" },
+    total2es: { id: "total2es", name: "TOTAL2ES", data: "data/total2es-weekly.json",
+            monthly: "data/total2es-monthly.json",
+            unit: "Market cap", liveUrl: null, liveSrc: "" },
+    total3es: { id: "total3es", name: "TOTAL3ES", data: "data/total3es-weekly.json",
+            monthly: "data/total3es-monthly.json",
+            unit: "Market cap", liveUrl: null, liveSrc: "" },
+    xmr:  { id: "xmr",  name: "XMR",  data: "data/xmr-weekly.json",
+            monthly: "data/xmr-monthly.json",
+            unit: "Price", liveUrl: "https://api.kraken.com/0/public/Ticker?pair=XMRUSD", liveSrc: "Kraken XMRUSD" },
   };
   const Q = new URLSearchParams(location.search);
   const COIN = COIN_DEFS[(Q.get("coin") || "btc").toLowerCase()] || COIN_DEFS.btc;
@@ -168,7 +186,7 @@
         return r.json();
       })
       .then(function (j) {
-        const p = +j.price;
+        const p = j.price !== undefined ? +j.price : +(j.result[Object.keys(j.result)[0]].c[0]);
         if (!(p > 0) || !isFinite(p)) throw new Error("bad price");
         return { price: p, source: LIVE_SRC, url: LIVE_URL, at: Date.now() };
       })
