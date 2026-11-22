@@ -72,6 +72,17 @@
         </div>
         <button type="button" class="share">Share PNG</button>
       </div>
+      <div class="chart-tools">
+        <div class="toggle toggle-sm toggle-style" role="radiogroup" aria-label="Chart style">
+          <button type="button" role="radio" aria-checked="true" data-style="candle">Candle</button>
+          <button type="button" role="radio" aria-checked="false" data-style="line">Line</button>
+        </div>
+        <div class="toggle toggle-sm toggle-range" role="radiogroup" aria-label="Visible range">
+          <button type="button" role="radio" aria-checked="false" data-range="1y">1Y</button>
+          <button type="button" role="radio" aria-checked="false" data-range="4y">4Y</button>
+          <button type="button" role="radio" aria-checked="true" data-range="all">All</button>
+        </div>
+      </div>
       <div class="stage">
         <canvas width="2400" height="1350" role="img" aria-label="BTC versus 200-week SMA, weekly, multiple view"></canvas>
       </div>

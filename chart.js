@@ -465,7 +465,7 @@
   // Weekly high-low bars, coloured by exact depth and split at 1× and 2×.
   // Coordinates are snapped to the backing-store pixel grid so thin bars
   // stay crisp instead of antialiasing into mush.
-  function drawZonedBars(x, pts, ST, L, Rx, T, B, Yr) {
+  function drawZonedBars(x, pts, ST, L, Rx, T, B, Yr, zoomed) {
     const dpr = ST.dpr || 1;
     const snap = function (v) { return Math.round(v * dpr) / dpr; };
     const px = 1 / dpr;
@@ -475,14 +475,21 @@
     else if (slot0 >= 0.9) w = Math.max(px, slot0 - px);
     else w = Math.max(px, slot0 * 0.92);
     w = Math.max(px, snap(w));
+    // Zoomed in, slots get wide: cap the bar so it stays a slim bar.
+    if (zoomed) w = Math.min(w, ST.mobile ? 8 : 12);
     x.save();
     x.beginPath();
     x.rect(L, T, Math.max(0, Rx - L), Math.max(0, B - T));
     x.clip();
     pts.forEach(function (q) {
       let x0 = snap(q.cx - w / 2);
-      if (x0 < L) x0 = L;
-      if (x0 + w > Rx) x0 = Math.max(L, Rx - w);
+      if (zoomed) {
+        // Bars past the edges are clipped, not pulled onto the plot.
+        if (x0 + w <= L || x0 >= Rx) return;
+      } else {
+        if (x0 < L) x0 = L;
+        if (x0 + w > Rx) x0 = Math.max(L, Rx - w);
+      }
       const cuts = [q.rLo];
       if (q.rLo < 1 && q.rHi > 1) cuts.push(1);
       if (q.rLo < 2 && q.rHi > 2) cuts.push(2);
@@ -505,6 +512,107 @@
       }
     });
     x.restore();
+  }
+
+  // Full time domain of a card (same span the "All" view has always shown).
+  function fullDomain(DATA) {
+    const W = DATA.W, f = DATA.f;
+    const isMonth = DATA.interval === "monthly";
+    return {
+      t0: ms(W[f][0]),
+      t1: isMonth
+        ? ms(addMonthsIso(W[W.length - 1][0], 1 + PADM))
+        : ms(W[W.length - 1][0]) + (1 + PADW) * 7 * DAY,
+    };
+  }
+
+  // Close line, coloured by zone and cut exactly where the multiple crosses
+  // 1x or 2x. On a log axis both views move log(multiple) linearly along a
+  // straight screen segment, so the crossing fraction is the same in both.
+  function drawZonedLine(x, pts, ST, L, Rx, T, B) {
+    if (pts.length < 2) return;
+    const lw = ST.mobile ? 1.75 : 2.25;
+    const runs = [];
+    let cur = null;
+    const push = function (col, xa, ya, xb, yb) {
+      if (cur && cur.c === col) { cur.p.push(xb, yb); return; }
+      cur = { c: col, p: [xa, ya, xb, yb] };
+      runs.push(cur);
+    };
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const la = Math.log(a.r), lb = Math.log(b.r);
+      const fr = [0];
+      [1, 2].forEach(function (k) {
+        if ((a.r - k) * (b.r - k) < 0) fr.push((Math.log(k) - la) / (lb - la));
+      });
+      fr.push(1);
+      fr.sort(function (p, q) { return p - q; });
+      for (let j = 0; j < fr.length - 1; j++) {
+        const u0 = fr[j], u1 = fr[j + 1];
+        if (!(u1 > u0)) continue;
+        const rm = Math.exp(la + (u0 + u1) / 2 * (lb - la));
+        push(zoneColor(rm),
+          a.cx + (b.cx - a.cx) * u0, a.yp + (b.yp - a.yp) * u0,
+          a.cx + (b.cx - a.cx) * u1, a.yp + (b.yp - a.yp) * u1);
+      }
+    }
+    x.save();
+    x.beginPath();
+    x.rect(L, T, Math.max(0, Rx - L), Math.max(0, B - T));
+    x.clip();
+    x.lineWidth = lw;
+    x.lineJoin = "round";
+    x.lineCap = "butt";
+    runs.forEach(function (rn) {
+      x.beginPath();
+      x.moveTo(rn.p[0], rn.p[1]);
+      for (let k = 2; k < rn.p.length; k += 2) x.lineTo(rn.p[k], rn.p[k + 1]);
+      x.strokeStyle = rn.c;
+      x.stroke();
+    });
+    x.restore();
+  }
+
+  // Time labels for a zoomed range: years when wide, months when narrow.
+  function drawTimeTicks(x, ST, L, Rx, B, v0, v1, X, F, Tx) {
+    F(400, ST.fs);
+    const minGap = ST.mobile ? 8 : 10;
+    const plotW = Rx - L;
+    const spanY = (v1 - v0) / (365.25 * DAY);
+    const labels = [];
+    if (spanY > 3.2) {
+      const pxY = plotW / spanY;
+      const need = x.measureText("2026").width + minGap * 2;
+      const step = [1, 2, 4, 5, 10].filter(function (s) { return pxY * s >= need; })[0] || 10;
+      const ya = new Date(v0).getUTCFullYear(), yb = new Date(v1).getUTCFullYear();
+      for (let yy = ya; yy <= yb + 1; yy++) {
+        if (yy % step) continue;
+        labels.push({ t: Date.UTC(yy, 0, 1), s: String(yy) });
+      }
+    } else {
+      const pxM = plotW / (spanY * 12);
+      const need = x.measureText("2026").width + minGap * 2;
+      const step = [1, 2, 3, 6, 12].filter(function (s) { return pxM * s >= need; })[0] || 12;
+      const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const d0 = new Date(v0);
+      let yy = d0.getUTCFullYear(), mm = d0.getUTCMonth();
+      for (let n = 0; n < 400; n++) {
+        const t = Date.UTC(yy, mm, 1);
+        if (t > v1) break;
+        if (mm % step === 0) labels.push({ t: t, s: mm === 0 ? String(yy) : MON[mm] });
+        mm++; if (mm > 11) { mm = 0; yy++; }
+      }
+    }
+    let lastRight = L - minGap;
+    labels.forEach(function (lb) {
+      const tw = x.measureText(lb.s).width;
+      const xx = X(lb.t);
+      const left = xx - tw / 2, right = xx + tw / 2;
+      if (left < L || right > Rx || left < lastRight + minGap) return;
+      Tx(lb.s, xx, B + ST.yr, AX, "center");
+      lastRight = right;
+    });
   }
 
   function drawDashed(x, drawPath, color, width, dash) {
@@ -562,23 +670,36 @@
     F(500, ST.wm); Tx(wmText, wmX, wmY, ST.share ? INK : ST.wmc, "right");
 
     const W = DATA.W, cl = DATA.cl, sm = DATA.sm, f = DATA.f;
-    const tStart = ms(W[f][0]);
-    const tEnd = isMonth
-      ? ms(addMonthsIso(W[W.length - 1][0], 1 + PADM))
-      : ms(W[W.length - 1][0]) + (1 + PADW) * 7 * DAY;
+    const dom = fullDomain(DATA);
+    // Visible range: the full domain ("All") unless zoomed or panned.
+    const zoomed = !!(ST.view && (ST.view.t0 > dom.t0 || ST.view.t1 < dom.t1));
+    const tStart = zoomed ? ST.view.t0 : dom.t0;
+    const tEnd = zoomed ? ST.view.t1 : dom.t1;
+    const barEnd = function (i) {
+      return isMonth ? ms(addMonthsIso(W[i][0], 1)) : ms(W[i][0]) + 7 * DAY;
+    };
+    const visible = function (i) { return barEnd(i) > tStart && ms(W[i][0]) < tEnd; };
 
     const hiA = DATA.hi, loA = DATA.lo;
     let lo = Infinity, hi = -Infinity;
     if (isPrice) {
       for (let i = f; i < W.length; i++) {
+        if (zoomed && !visible(i)) continue;
         lo = Math.min(lo, loA[i], sm[i], 2 * sm[i]);
         hi = Math.max(hi, hiA[i], sm[i], 2 * sm[i]);
       }
     } else {
       for (let i = f; i < W.length; i++) {
+        if (zoomed && !visible(i)) continue;
         lo = Math.min(lo, loA[i] / sm[i]);
         hi = Math.max(hi, hiA[i] / sm[i]);
       }
+    }
+    if (!(hi > 0) || !(lo > 0)) {
+      // Panned past the last bar: fall back to the last bar's levels.
+      const i = W.length - 1;
+      lo = isPrice ? Math.min(loA[i], sm[i]) : loA[i] / sm[i];
+      hi = isPrice ? Math.max(hiA[i], 2 * sm[i]) : hiA[i] / sm[i];
     }
     const HR = 1.15, bot = lo / HR;
     let top = hi * HR;
@@ -590,7 +711,7 @@
       });
       return out;
     })();
-    if (isPrice) {
+    if (isPrice && !zoomed) {
       // End the price axis on a labelled round level just above the highest line.
       const nxt = usdTicks.filter(function (v) { return v >= hi; })[0];
       if (nxt) top = Math.max(top, nxt * 1.04);
@@ -612,6 +733,53 @@
         const keep = { 0.5: 1, 1: 1, 2: 1, 4: 1, 16: 1 };
         ticks = ticks.filter(function (v) { return keep[v]; });
       }
+    }
+    if (zoomed) {
+      // A zoomed range can be narrower than the round levels: add finer
+      // levels, then thin them so labels never crowd.
+      const Tz = ST.T, Bz = ST.B, lt = Math.log10(top), lb = Math.log10(bot);
+      const yOf = function (v) { return Tz + ((lt - Math.log10(v)) / (lt - lb)) * (Bz - Tz); };
+      const minPx = ST.mobile ? 22 : 34;
+      // Densest evenly-patterned set of levels whose labels don't crowd.
+      const P2 = [0.0625, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128];
+      const R2 = P2.concat([0.375, 0.75, 1.5, 3, 6, 12, 24, 48, 96]);
+      const R3 = R2.concat([0.6, 0.7, 0.8, 0.9, 1.25, 1.75, 2.5, 3.5, 5, 7]);
+      const sets = isPrice
+        ? [[1, 2, 5], [1, 2, 3, 5, 7], [1, 1.5, 2, 3, 4, 5, 7], [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9]]
+        : [P2, R2, R3];
+      const build = function (list) {
+        let out = [];
+        if (isPrice) {
+          for (let e = -8; e <= 13; e++) {
+            list.forEach(function (m) { out.push(+(m * Math.pow(10, e)).toPrecision(4)); });
+          }
+        } else out = list.slice();
+        return out.filter(function (v, i, a) { return v >= bot && v <= top && a.indexOf(v) === i; })
+          .sort(function (p, q) { return p - q; });
+      };
+      const spaced = function (arr) {
+        for (let k = 1; k < arr.length; k++) if (Math.abs(yOf(arr[k - 1]) - yOf(arr[k])) < minPx) return false;
+        return true;
+      };
+      let best = null;
+      sets.forEach(function (ms0) {
+        const c = build(ms0);
+        if (spaced(c) && (!best || c.length > best.length)) best = c;
+      });
+      if (!best || best.length < 2) {
+        const c = build(sets[sets.length - 1]), picked = [];
+        c.forEach(function (v) {
+          if (!picked.length || Math.abs(yOf(picked[picked.length - 1]) - yOf(v)) >= minPx) picked.push(v);
+        });
+        best = picked;
+      }
+      if (!isPrice) [1, 2].forEach(function (v) {
+        if (v >= bot && v <= top && best.indexOf(v) < 0) {
+          best = best.filter(function (q) { return Math.abs(yOf(q) - yOf(v)) >= minPx * 0.8; });
+          best.push(v);
+        }
+      });
+      ticks = best.sort(function (p, q) { return p - q; });
     }
     const tickLab = isPrice ? usdTick : rTick;
 
@@ -660,6 +828,8 @@
     }
 
     F(400, ST.fs);
+    if (zoomed) drawTimeTicks(x, ST, L, Rx, B, tStart, tEnd, X, F, Tx);
+    else {
     const y0 = new Date(tStart).getUTCFullYear();
     const y1 = new Date(tEnd).getUTCFullYear();
     const step = ST.yearStep || 2;
@@ -687,10 +857,18 @@
       Tx(String(yy), xx, B + ST.yr, AX, "center");
       lastRight = right;
     }
+    }
 
     const pts = [];
     const weekMs = 7 * DAY;
-    for (let i = f; i < W.length; i++) {
+    let iA = f, iB = W.length - 1;
+    if (zoomed) {
+      while (iA < W.length - 1 && barEnd(iA) <= tStart) iA++;
+      while (iB > iA && ms(W[iB][0]) >= tEnd) iB--;
+      iA = Math.max(f, iA - 1);
+      iB = Math.min(W.length - 1, iB + 1);
+    }
+    for (let i = iA; i <= iB; i++) {
       const t = ms(W[i][0]);
       const t1 = isMonth ? ms(addMonthsIso(W[i][0], 1)) : t + weekMs;
       const x0 = X(t), x1 = X(t1);
@@ -699,6 +877,8 @@
         x0: x0,
         x1: x1,
         cx: (x0 + x1) / 2,
+        i: i,
+        t: W[i][0],
         p: cl[i],
         lo: loA[i],
         hi: hiA[i],
@@ -720,6 +900,12 @@
           return { x: X(q.t + 3.5 * DAY), ys: Yr(q.s), y2: Yr(2 * q.s) };
         });
       }
+      x.save();
+      if (zoomed) {
+        x.beginPath();
+        x.rect(L, T, Math.max(0, Rx - L), Math.max(0, B - T));
+        x.clip();
+      }
       x.lineJoin = "round";
       x.lineCap = "round";
       x.beginPath();
@@ -730,6 +916,7 @@
       drawDashed(x, function () {
         linePts.forEach(function (q, k) { k ? x.lineTo(q.x, q.y2) : x.moveTo(q.x, q.y2); });
       }, "rgba(107,117,131,0.85)", ST.mobile ? 1.1 : 1.35, ST.mobile ? [3, 3] : [5, 4]);
+      x.restore();
       // Legend for the two reference lines (replaces right-edge labels).
       const lgF = ST.mobile ? 10.5 : 15;
       F(500, lgF);
@@ -755,7 +942,8 @@
         "rgba(138,145,156,0.95)", ST.mobile ? 1.1 : 1.35, ST.mobile ? [3, 3] : [5, 4]);
       Tx(t2, lx2 + segW + segGap, ly, SMA_C);
     }
-    if (!DATA.missingHL) drawZonedBars(x, pts, ST, L, Rx, T, B, Yr);
+    if (ST.style === "line") drawZonedLine(x, pts, ST, L, Rx, T, B);
+    else if (!DATA.missingHL) drawZonedBars(x, pts, ST, L, Rx, T, B, Yr, zoomed);
 
     const last = pts[pts.length - 1];
     const price = DATA.lastPx, smaV = DATA.lastSma, mult = price / smaV;
@@ -782,6 +970,8 @@
 
     return {
       L: L, Rx: Rx, T: T, B: B, top: top, bot: bot, ticks: ticks,
+      t0: tStart, t1: tEnd, dom: dom, zoomed: zoomed, pts: pts,
+      style: ST.style === "line" ? "line" : "candle",
       last: last, price: price, sma: smaV, mult: mult, zone: zNow,
       layout: ST.mobile ? "mobile" : "desktop", W: Wd, H: H,
       start: DATA.start, n: DATA.n, smaLabel: def.smaLabel,
@@ -807,12 +997,21 @@
     if (!root) throw new Error("missing card " + def.id);
     const canvas = root.querySelector("canvas");
     const stage = root.querySelector(".stage");
-    const group = root.querySelector('.toggle:not(.toggle-tf)');
+    const group = root.querySelector('.toolbar .toggle:not(.toggle-tf)');
     const groupTf = root.querySelector(".toggle-tf");
+    const groupStyle = root.querySelector(".toggle-style");
+    const groupRange = root.querySelector(".toggle-range");
     const shareBtn = root.querySelector(".share");
     let MODE = START;
     let TF = START_TF;
     let lastCssW = 0;
+    // Chart style (candle = the zone-split high-low bars), visible range
+    // ("all", "1y", "4y" or "custom" with VIEW in ms) and crosshair state.
+    let STYLE = "candle";
+    let RANGE = "all";
+    let VIEW = null;
+    let META = null, LAYOUT = null;
+    let HOVER = null; // crosshair x in layout units, or null
 
     function activeData() { return datas[TF] || datas.weekly; }
 
@@ -842,12 +1041,41 @@
       return desktopLayout(mode);
     }
 
+    function minSpan(DATA) {
+      return DATA.interval === "monthly" ? 10 * 30.44 * DAY : 12 * 7 * DAY;
+    }
+    function clampView(v, DATA) {
+      const dom = fullDomain(DATA);
+      const full = dom.t1 - dom.t0;
+      let span = Math.max(minSpan(DATA), v.t1 - v.t0);
+      if (span >= full) return null;
+      let t0 = v.t0, t1 = t0 + span;
+      if (t0 < dom.t0) { t0 = dom.t0; t1 = t0 + span; }
+      if (t1 > dom.t1) { t1 = dom.t1; t0 = t1 - span; }
+      return { t0: t0, t1: t1 };
+    }
+    function presetView(range, DATA) {
+      const W = DATA.W, n = W.length - 1;
+      const lastEnd = DATA.interval === "monthly" ? ms(addMonthsIso(W[n][0], 1)) : ms(W[n][0]) + 7 * DAY;
+      const R = (range === "1y" ? 1 : 4) * 365.25 * DAY;
+      return clampView({ t0: lastEnd - R, t1: lastEnd + R * 0.06 }, DATA);
+    }
+    function resolveView(DATA) {
+      if (RANGE === "all") return null;
+      if (RANGE === "custom") return VIEW ? clampView(VIEW, DATA) : null;
+      return presetView(RANGE, DATA);
+    }
+
     function draw(mode) {
       const layout = displayLayout(mode);
       const x = sizeCanvas(canvas, layout);
       lastCssW = layout.mobile ? layout.W : (stage && stage.clientWidth) || layout.W;
       const DATA = activeData();
+      layout.view = resolveView(DATA);
+      layout.style = STYLE;
       const meta = drawInto(x, mode, layout, DATA, def);
+      META = meta; LAYOUT = layout;
+      drawOverlay();
       const tfWord = DATA.interval === "monthly" ? "monthly" : "weekly";
       canvas.setAttribute(
         "aria-label",
@@ -868,6 +1096,45 @@
           b.setAttribute("aria-checked", b.getAttribute("data-tf") === TF ? "true" : "false");
         });
       }
+      if (groupStyle) {
+        groupStyle.querySelectorAll("[data-style]").forEach(function (b) {
+          b.setAttribute("aria-checked", b.getAttribute("data-style") === STYLE ? "true" : "false");
+        });
+      }
+      if (groupRange) {
+        groupRange.querySelectorAll("[data-range]").forEach(function (b) {
+          b.setAttribute("aria-checked", b.getAttribute("data-range") === RANGE ? "true" : "false");
+        });
+      }
+    }
+
+    function setStyle(style, opts) {
+      STYLE = style === "line" ? "line" : "candle";
+      syncToggles();
+      const meta = draw(MODE);
+      if (opts && opts.focus && groupStyle) {
+        const el = groupStyle.querySelector('[data-style="' + STYLE + '"]');
+        if (el) el.focus();
+      }
+      return meta;
+    }
+
+    function setRange(range, opts) {
+      if (range && typeof range === "object") {
+        const v = clampView(range, activeData());
+        RANGE = v ? "custom" : "all";
+        VIEW = v;
+      } else {
+        RANGE = range === "1y" || range === "4y" ? range : "all";
+        VIEW = null;
+      }
+      syncToggles();
+      const meta = draw(MODE);
+      if (opts && opts.focus && groupRange) {
+        const el = groupRange.querySelector('[data-range="' + RANGE + '"]');
+        if (el) el.focus();
+      }
+      return meta;
     }
 
     function setMode(mode, opts) {
@@ -940,6 +1207,10 @@
       if (tf) TF = tf === "monthly" ? "monthly" : "weekly";
       const DATA = activeData();
       const layout = desktopLayout(mode);
+      // Export what is on screen: same chart style and visible range.
+      // The crosshair lives on its own overlay, so it never gets in here.
+      layout.view = resolveView(DATA);
+      layout.style = STYLE;
       // Same plot bottom as Price, so the zone key gets a clear row under the years.
       if (mode !== "price") layout.B = 488;
       layout.share = true;
@@ -1033,6 +1304,251 @@
     }
     shareBtn.addEventListener("click", downloadPng);
 
+    function bindRadio(el, attr, apply, values) {
+      if (!el) return;
+      el.addEventListener("click", function (e) {
+        const b = e.target.closest("[" + attr + "]");
+        if (!b) return;
+        apply(b.getAttribute(attr));
+      });
+      el.addEventListener("keydown", function (e) {
+        const k = e.key;
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].indexOf(k) < 0) return;
+        e.preventDefault();
+        const curB = el.querySelector('[aria-checked="true"]');
+        let i = values.indexOf(curB ? curB.getAttribute(attr) : values[0]);
+        if (k === "Home") i = 0;
+        else if (k === "End") i = values.length - 1;
+        else if (k === "ArrowLeft" || k === "ArrowUp") i = (Math.max(i, 0) - 1 + values.length) % values.length;
+        else i = (i + 1) % values.length;
+        apply(values[i], { focus: true });
+      });
+    }
+    bindRadio(groupStyle, "data-style", setStyle, ["candle", "line"]);
+    bindRadio(groupRange, "data-range", setRange, ["1y", "4y", "all"]);
+
+    // ---- Crosshair overlay (on-page only; Share renders off-screen) ----
+    const overlay = document.createElement("canvas");
+    overlay.className = "xhair";
+    overlay.setAttribute("aria-hidden", "true");
+    if (stage) stage.appendChild(overlay);
+
+    function toUnits(clientX, clientY) {
+      const r = canvas.getBoundingClientRect();
+      const k = LAYOUT ? LAYOUT.W / (r.width || LAYOUT.W) : 1;
+      return { x: (clientX - r.left) * k, y: (clientY - r.top) * k };
+    }
+    function nearestPt(ux) {
+      if (!META || !META.pts || !META.pts.length) return null;
+      let best = null, bd = Infinity;
+      META.pts.forEach(function (q) {
+        if (q.cx < META.L - 0.5 || q.cx > META.Rx + 0.5) return;
+        const d = Math.abs(q.cx - ux);
+        if (d < bd) { bd = d; best = q; }
+      });
+      return best;
+    }
+    function fmtBarDate(iso) {
+      if (activeData().interval !== "monthly") return fmtDay(iso);
+      const m = /^(\d{4})-(\d{2})/.exec(iso || "");
+      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return m ? months[+m[2] - 1] + " " + m[1] : iso;
+    }
+    function drawOverlay() {
+      if (!LAYOUT) return;
+      const r = canvas.getBoundingClientRect();
+      overlay.style.left = canvas.offsetLeft + "px";
+      overlay.style.top = canvas.offsetTop + "px";
+      overlay.style.width = r.width + "px";
+      overlay.style.height = r.height + "px";
+      if (overlay.width !== canvas.width || overlay.height !== canvas.height) {
+        overlay.width = canvas.width;
+        overlay.height = canvas.height;
+      }
+      const x = overlay.getContext("2d");
+      x.setTransform(1, 0, 0, 1, 0, 0);
+      x.clearRect(0, 0, overlay.width, overlay.height);
+      if (HOVER == null || !META) { overlay.hidden = true; return; }
+      const q = nearestPt(HOVER);
+      if (!q) { overlay.hidden = true; return; }
+      overlay.hidden = false;
+      const ST = LAYOUT;
+      x.setTransform(ST.dpr, 0, 0, ST.dpr, 0, 0);
+      const L = META.L, Rx = META.Rx, T = META.T, B = META.B;
+      const cx = Math.round(q.cx * ST.dpr) / ST.dpr + 0.5 / ST.dpr;
+      x.save();
+      x.strokeStyle = "rgba(201,206,214,0.55)";
+      x.lineWidth = 1;
+      x.setLineDash(ST.mobile ? [3, 3] : [4, 4]);
+      x.beginPath(); x.moveTo(cx, T); x.lineTo(cx, B); x.stroke();
+      x.restore();
+      // Small ring on the close.
+      if (q.yp >= T && q.yp <= B) {
+        x.beginPath();
+        x.arc(q.cx, q.yp, ST.mobile ? 3 : 4, 0, Math.PI * 2);
+        x.fillStyle = BG; x.fill();
+        x.lineWidth = ST.mobile ? 1.5 : 2;
+        x.strokeStyle = INK; x.stroke();
+      }
+      // Readout box.
+      const fsz = ST.mobile ? 11 : 14, lh = ST.mobile ? 15 : 20, pad = ST.mobile ? 7 : 10;
+      const rows = [
+        [COIN.unit || "Price", fv(q.p), INK],
+        [def.smaLabel, fv(q.s), INK],
+        ["Multiple", q.r.toFixed(2) + "x", zoneColor(q.r)],
+      ];
+      const title = fmtBarDate(q.t);
+      x.font = "600 " + fsz + "px " + FONT;
+      let lw = x.measureText(title).width, vw = 0, kw = 0;
+      rows.forEach(function (rw) {
+        x.font = "400 " + fsz + "px " + FONT; kw = Math.max(kw, x.measureText(rw[0]).width);
+        x.font = "700 " + fsz + "px " + FONT; vw = Math.max(vw, x.measureText(rw[1]).width);
+      });
+      const gap = ST.mobile ? 10 : 16;
+      const bw = Math.ceil(Math.max(lw, kw + gap + vw) + pad * 2);
+      const bh = Math.ceil(pad * 2 + lh * (rows.length + 1) - (lh - fsz) + 2);
+      const off = ST.mobile ? 10 : 14;
+      let bx = q.cx + off;
+      if (bx + bw > Rx) bx = q.cx - off - bw;
+      if (bx < L) bx = Math.min(Rx - bw, L + 2);
+      const by = T + (ST.mobile ? 4 : 8);
+      x.fillStyle = "rgba(18,22,28,0.94)";
+      x.strokeStyle = "#2c333d";
+      x.lineWidth = 1;
+      x.beginPath();
+      if (x.roundRect) x.roundRect(bx + 0.5, by + 0.5, bw, bh, 6); else x.rect(bx + 0.5, by + 0.5, bw, bh);
+      x.fill(); x.stroke();
+      x.textBaseline = "alphabetic";
+      let ty = by + pad + fsz;
+      x.textAlign = "left";
+      x.font = "600 " + fsz + "px " + FONT; x.fillStyle = INK; x.fillText(title, bx + pad, ty);
+      rows.forEach(function (rw) {
+        ty += lh;
+        x.textAlign = "left"; x.font = "400 " + fsz + "px " + FONT; x.fillStyle = "#a7adb6";
+        x.fillText(rw[0], bx + pad, ty);
+        x.textAlign = "right"; x.font = "700 " + fsz + "px " + FONT; x.fillStyle = rw[2];
+        x.fillText(rw[1], bx + bw - pad, ty);
+      });
+    }
+
+    // ---- Zoom and pan ----
+    let raf = 0;
+    function redrawSoon() {
+      if (raf) return;
+      raf = requestAnimationFrame(function () { raf = 0; draw(MODE); });
+    }
+    function curView() {
+      const DATA = activeData();
+      return resolveView(DATA) || fullDomain(DATA);
+    }
+    function setCustom(v) {
+      const c = clampView(v, activeData());
+      RANGE = c ? "custom" : "all";
+      VIEW = c;
+      syncToggles();
+      redrawSoon();
+    }
+    function timeAt(ux, v) {
+      const L = META.L, Rx = META.Rx;
+      return v.t0 + ((ux - L) / (Rx - L)) * (v.t1 - v.t0);
+    }
+    function zoomAt(ux, factor) {
+      if (!META) return;
+      const v = curView();
+      const ta = timeAt(Math.max(META.L, Math.min(META.Rx, ux)), v);
+      const span = (v.t1 - v.t0) * factor;
+      const k = span / (v.t1 - v.t0);
+      setCustom({ t0: ta - (ta - v.t0) * k, t1: ta - (ta - v.t0) * k + span });
+    }
+    function inPlot(u) {
+      return META && u.x >= META.L && u.x <= META.Rx && u.y >= META.T - 4 && u.y <= META.B + 4;
+    }
+
+    canvas.addEventListener("wheel", function (e) {
+      const u = toUnits(e.clientX, e.clientY);
+      if (!inPlot(u)) return;
+      e.preventDefault();
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      zoomAt(u.x, Math.exp(Math.max(-0.5, Math.min(0.5, dy * 0.0018))));
+      HOVER = u.x;
+    }, { passive: false });
+
+    const ptrs = new Map();
+    let drag = null, pinch = null;
+    canvas.addEventListener("pointerdown", function (e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      const u = toUnits(e.clientX, e.clientY);
+      ptrs.set(e.pointerId, { x: u.x, y: u.y });
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (e.pointerType === "mouse") {
+        if (!inPlot(u)) return;
+        drag = { x: u.x, v: curView(), moved: false };
+        canvas.classList.add("is-dragging");
+        e.preventDefault();
+      } else if (ptrs.size === 1) {
+        // Touch / pen: one finger shows and scrubs the crosshair.
+        HOVER = u.x; drawOverlay();
+      } else if (ptrs.size === 2) {
+        const a = Array.from(ptrs.values());
+        HOVER = null; drawOverlay();
+        pinch = {
+          d: Math.max(10, Math.abs(a[0].x - a[1].x)),
+          m: (a[0].x + a[1].x) / 2,
+          v: curView(),
+        };
+        pinch.tm = timeAt(pinch.m, pinch.v);
+      }
+    });
+    canvas.addEventListener("pointermove", function (e) {
+      const u = toUnits(e.clientX, e.clientY);
+      if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: u.x, y: u.y });
+      if (e.pointerType === "mouse") {
+        if (drag) {
+          const dx = u.x - drag.x;
+          if (Math.abs(dx) > 2) drag.moved = true;
+          const dt = dx * (drag.v.t1 - drag.v.t0) / (META.Rx - META.L);
+          setCustom({ t0: drag.v.t0 - dt, t1: drag.v.t1 - dt });
+        }
+        HOVER = inPlot(u) || drag ? u.x : null;
+        if (!drag) drawOverlay();
+        return;
+      }
+      if (pinch && ptrs.size >= 2) {
+        const a = Array.from(ptrs.values());
+        const d = Math.max(10, Math.abs(a[0].x - a[1].x));
+        const m = (a[0].x + a[1].x) / 2;
+        const span = (pinch.v.t1 - pinch.v.t0) * pinch.d / d;
+        const frac = (m - META.L) / (META.Rx - META.L);
+        const t0 = pinch.tm - frac * span;
+        setCustom({ t0: t0, t1: t0 + span });
+        return;
+      }
+      if (ptrs.size === 1 && ptrs.has(e.pointerId)) {
+        HOVER = u.x; drawOverlay();
+      }
+    });
+    function endPtr(e) {
+      ptrs.delete(e.pointerId);
+      if (ptrs.size < 2) pinch = null;
+      if (e.pointerType === "mouse") {
+        drag = null;
+        canvas.classList.remove("is-dragging");
+      } else if (e.type === "pointercancel") {
+        // The page took the gesture (vertical scroll): drop the crosshair.
+        HOVER = null; drawOverlay();
+      }
+    }
+    canvas.addEventListener("pointerup", endPtr);
+    canvas.addEventListener("pointercancel", endPtr);
+    canvas.addEventListener("pointerleave", function (e) {
+      if (e.pointerType === "mouse" && !drag) { HOVER = null; drawOverlay(); }
+    });
+    canvas.addEventListener("dblclick", function () { setRange("all"); });
+    // Tap anywhere else hides a touch crosshair.
+    document.addEventListener("pointerdown", function (e) {
+      if (HOVER != null && e.target !== canvas) { HOVER = null; drawOverlay(); }
+    });
+
     function onResize() {
       if (SHARE) return;
       const w = stage ? stage.clientWidth : 0;
@@ -1053,6 +1569,12 @@
       setMode: setMode,
       setTf: setTf,
       setView: setView,
+      setStyle: setStyle,
+      setRange: setRange,
+      getStyle: function () { return STYLE; },
+      getRange: function () { return { range: RANGE, view: resolveView(activeData()) }; },
+      getMeta: function () { return META; },
+      setHover: function (ux) { HOVER = ux; drawOverlay(); return nearestPt(ux); },
       draw: draw,
       onResize: onResize,
       exportPng: function (mode, tf) { return renderShareCanvas(mode || MODE, tf || TF).toDataURL("image/png"); },
@@ -1062,6 +1584,8 @@
         if (tf) TF = tf === "monthly" ? "monthly" : "weekly";
         const DATA = activeData();
         const layout = desktopLayout(m);
+        layout.view = resolveView(DATA);
+        layout.style = STYLE;
         const off = document.createElement("canvas");
         off.width = 8; off.height = 8;
         const meta = drawInto(off.getContext("2d"), m, layout, DATA, def);
@@ -1380,6 +1904,7 @@
     }
     return go(cardId);
   };
+  window.__card = function (id) { return cards[id || "200w"]; };
   window.__exportPng = function (cardId, mode, tf) {
     const id = cardId || SHARE_CARD || "200w";
     return cards[id].exportPng(mode, tf);
