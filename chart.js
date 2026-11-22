@@ -82,8 +82,22 @@
   const LIVE_URL = COIN.liveUrl || null;
   const LIVE_SRC = COIN.liveSrc;
   const SHARE = Q.get("share") === "1" || Q.get("cache") === "1";
-  const START = Q.get("mode") === "price" ? "price" : "relative";
+  // Chart state lives in the URL (coin, view, tf, style, range or from/to),
+  // so a copied link opens the same chart. Old ?mode=price links still work.
+  const START = (Q.get("view") || "").toLowerCase() === "regular" || Q.get("mode") === "price" ? "price" : "relative";
   const START_TF = Q.get("tf") === "monthly" ? "monthly" : "weekly";
+  const START_STYLE = Q.get("style") === "line" ? "line" : "candle";
+  const START_RANGE = (function () {
+    const r = (Q.get("range") || "").toLowerCase();
+    if (r === "1y" || r === "4y") return { range: r };
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    const a = Q.get("from"), b = Q.get("to");
+    if (a && b && iso.test(a) && iso.test(b)) {
+      const t0 = Date.parse(a + "T00:00:00Z"), t1 = Date.parse(b + "T00:00:00Z");
+      if (isFinite(t0) && isFinite(t1) && t1 > t0) return { range: "custom", view: { t0: t0, t1: t1 } };
+    }
+    return { range: "all" };
+  })();
   const SHARE_CARD = (Q.get("card") || "").toLowerCase();
 
   const CARD_DEFS = [{
@@ -120,6 +134,18 @@
     if (a >= 0.0001) return "$" + v.toFixed(6);
     if (a === 0) return "$0";
     return "$" + v.toFixed(8);
+  }
+  // % distance from the 200W SMA, from the multiple as shown (2 decimals),
+  // so "0.89x" always reads "-11%". True minus sign.
+  function pctOf(mult) {
+    const m = parseFloat(mult.toFixed(2));
+    return Math.round((m - 1) * 100);
+  }
+  function pctText(mult) {
+    const p = pctOf(mult);
+    if (p > 0) return "+" + p + "%";
+    if (p < 0) return "\u2212" + Math.abs(p) + "%";
+    return "0%";
   }
   function rTick(v) { return String(+v.toPrecision(3)) + "x"; }
   function slimTick(x, suffix) {
@@ -973,6 +999,12 @@
       F(400, ST.ml); Tx(q[0], Pd + jj * cw, ST.ny + ST.mly, ST.mlc);
       F(800, ST.mv); Tx(q[1], Pd + jj * cw, ST.ny + ST.mvy, q[2]);
     });
+    // Distance from the 200W SMA in %, next to the multiple, same zone colour.
+    const pctTxt = "(" + pctText(mult) + ")";
+    F(800, ST.mv);
+    const multW = x.measureText(nums[2][1]).width;
+    F(700, Math.round(ST.mv * 0.62));
+    Tx(pctTxt, Pd + 2 * cw + multW + (ST.mobile ? 5 : 10), ST.ny + ST.mvy, zCol);
 
     return {
       L: L, Rx: Rx, T: T, B: B, top: top, bot: bot, ticks: ticks,
@@ -1013,9 +1045,9 @@
     let lastCssW = 0;
     // Chart style (candle = the zone-split high-low bars), visible range
     // ("all", "1y", "4y" or "custom" with VIEW in ms) and crosshair state.
-    let STYLE = "candle";
-    let RANGE = "all";
-    let VIEW = null;
+    let STYLE = START_STYLE;
+    let RANGE = START_RANGE.range;
+    let VIEW = START_RANGE.view || null;
     let META = null, LAYOUT = null;
     let HOVER = null; // crosshair x in layout units, or null
 
@@ -1111,7 +1143,34 @@
       return meta;
     }
 
+    // Write the current chart state to the URL (defaults are left out).
+    let urlT = 0;
+    function writeUrl() {
+      if (SHARE || !window.history || !history.replaceState) return;
+      clearTimeout(urlT);
+      urlT = setTimeout(function () {
+        const P = new URLSearchParams(location.search);
+        ["coin", "view", "mode", "tf", "style", "range", "from", "to"].forEach(function (k) { P.delete(k); });
+        if (COIN.id !== "btc") P.set("coin", COIN.id);
+        if (MODE === "price") P.set("view", "regular");
+        if (TF === "monthly") P.set("tf", "monthly");
+        if (STYLE === "line") P.set("style", "line");
+        if (RANGE === "1y" || RANGE === "4y") P.set("range", RANGE);
+        else if (RANGE === "custom" && VIEW) {
+          const iso = function (t) { return new Date(t).toISOString().slice(0, 10); };
+          P.set("from", iso(VIEW.t0));
+          P.set("to", iso(VIEW.t1));
+        }
+        const qs = P.toString();
+        const next = location.pathname + (qs ? "?" + qs : "") + location.hash;
+        if (next !== location.pathname + location.search + location.hash) {
+          try { history.replaceState(history.state, "", next); } catch (e) { /* ignore */ }
+        }
+      }, 120);
+    }
+
     function syncToggles() {
+      writeUrl();
       group.querySelectorAll("[data-mode]").forEach(function (b) {
         b.setAttribute("aria-checked", b.getAttribute("data-mode") === MODE ? "true" : "false");
       });
@@ -1596,6 +1655,10 @@
       draw(MODE);
     }
 
+    if (RANGE === "custom") {
+      VIEW = VIEW ? clampView(VIEW, activeData()) : null;
+      if (!VIEW) RANGE = "all";
+    }
     setMode(MODE);
 
     return {
@@ -1674,9 +1737,49 @@
     }
   }
 
+  // Small grey line under the chart: when the numbers were last updated,
+  // in the visitor's time zone, and where they come from.
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function fmtStamp(d) {
+    let tz = "";
+    try {
+      const part = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+        .formatToParts(d).filter(function (q) { return q.type === "timeZoneName"; })[0];
+      tz = part ? part.value : "";
+    } catch (e) { tz = ""; }
+    return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() + ", " + fmtHM(d) + (tz ? " " + tz : "");
+  }
+  function passDate(pass) {
+    const m = /(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(?:\s+(CEST|CET|UTC))?/.exec(pass || "");
+    if (!m) return null;
+    const off = m[3] === "CEST" ? "+02:00" : m[3] === "UTC" ? "Z" : "+01:00";
+    const d = new Date(m[1] + "T" + m[2] + ":00" + off);
+    return isFinite(d.getTime()) ? d : null;
+  }
+  function setSourceLine() {
+    const el = document.getElementById("chart-src");
+    if (!el || !SHARED) return;
+    const first = SHARED.cards[0];
+    const live = SHARED.live;
+    const seg = function (t) { return '<span class="nowrap">' + t + "</span>"; };
+    let parts;
+    if (first.liveOn && live) {
+      parts = ["Updated " + fmtStamp(new Date(live.at)),
+               "Price: " + LIVE_SRC.split(" ")[0],
+               "History: TradingView"];
+    } else {
+      const d = passDate(first.pass);
+      parts = ["Updated " + (d ? fmtStamp(d) : (first.pass || "")),
+               "Data: TradingView"];
+    }
+    el.innerHTML = parts.map(function (t, i) { return seg(i < parts.length - 1 ? t + " \u00b7" : t); }).join(" ");
+    el.hidden = false;
+  }
+
   function setPageCopy() {
     if (!SHARED) return;
     setNote();
+    setSourceLine();
     const d = SHARED.weekly || SHARED.cards[0];
     const mo = SHARED.monthly;
     const unitLower = COIN.unit === "Market cap" ? "market cap" : "price";

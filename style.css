@@ -559,3 +559,13 @@ body.share-only .xhair { display: none; }
   }
 }
 .stage canvas.xhair[hidden] { display: none; }
+
+/* Small grey source line under the chart */
+.chart-src {
+  margin: 8px 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+body.share-only .chart-src { display: none; }
+
