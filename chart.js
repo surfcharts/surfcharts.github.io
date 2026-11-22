@@ -485,7 +485,8 @@
       let x0 = snap(q.cx - w / 2);
       if (zoomed) {
         // Bars past the edges are clipped, not pulled onto the plot.
-        if (x0 + w <= L || x0 >= Rx) return;
+        // Only whole bars: a bar cut by the axis would read as a fake spike.
+        if (x0 < L - 0.01 || x0 + w > Rx + 0.01) return;
       } else {
         if (x0 < L) x0 = L;
         if (x0 + w > Rx) x0 = Math.max(L, Rx - w);
@@ -518,8 +519,13 @@
   function fullDomain(DATA) {
     const W = DATA.W, f = DATA.f;
     const isMonth = DATA.interval === "monthly";
+    // Same empty gap before the first bar as after the live bar, so the
+    // first bar never sits on the left axis.
     return {
-      t0: ms(W[f][0]),
+      t0: isMonth
+        ? ms(addMonthsIso(W[f][0], -PADM))
+        : ms(W[f][0]) - PADW * 7 * DAY,
+      first: ms(W[f][0]),
       t1: isMonth
         ? ms(addMonthsIso(W[W.length - 1][0], 1 + PADM))
         : ms(W[W.length - 1][0]) + (1 + PADW) * 7 * DAY,
@@ -1044,21 +1050,39 @@
     function minSpan(DATA) {
       return DATA.interval === "monthly" ? 10 * 30.44 * DAY : 12 * 7 * DAY;
     }
-    function clampView(v, DATA) {
+    // Right-edge geometry. "All" leaves an empty gap after the live bar
+    // (PADW weeks / PADM months). Every zoomed view keeps the same gap as a
+    // share of the visible span, so the live bar never sits on the edge.
+    function edgeInfo(DATA) {
       const dom = fullDomain(DATA);
+      const W = DATA.W, n = W.length - 1;
+      const lastEnd = DATA.interval === "monthly" ? ms(addMonthsIso(W[n][0], 1)) : ms(W[n][0]) + 7 * DAY;
+      const padFrac = (dom.t1 - lastEnd) / (dom.t1 - dom.t0);
+      const leftFrac = (dom.first - dom.t0) / (dom.t1 - dom.t0);
+      return { dom: dom, lastEnd: lastEnd, padFrac: padFrac, leftFrac: leftFrac };
+    }
+    function maxT1(E, span) { return E.lastEnd + E.padFrac * span; }
+    function atEnd(v, E) { return v.t1 >= maxT1(E, v.t1 - v.t0) - 0.5 * DAY; }
+    function clampView(v, DATA) {
+      const E = edgeInfo(DATA), dom = E.dom;
       const full = dom.t1 - dom.t0;
       let span = Math.max(minSpan(DATA), v.t1 - v.t0);
       if (span >= full) return null;
       let t0 = v.t0, t1 = t0 + span;
-      if (t0 < dom.t0) { t0 = dom.t0; t1 = t0 + span; }
-      if (t1 > dom.t1) { t1 = dom.t1; t0 = t1 - span; }
+      // Left stop keeps the same share of empty space before the first bar.
+      const mn = dom.first - E.leftFrac * span;
+      if (t0 < mn) { t0 = mn; t1 = t0 + span; }
+      const mx = maxT1(E, span);
+      if (t1 > mx) { t1 = mx; t0 = t1 - span; }
       return { t0: t0, t1: t1 };
     }
     function presetView(range, DATA) {
-      const W = DATA.W, n = W.length - 1;
-      const lastEnd = DATA.interval === "monthly" ? ms(addMonthsIso(W[n][0], 1)) : ms(W[n][0]) + 7 * DAY;
+      const E = edgeInfo(DATA);
       const R = (range === "1y" ? 1 : 4) * 365.25 * DAY;
-      return clampView({ t0: lastEnd - R, t1: lastEnd + R * 0.06 }, DATA);
+      // R of history before the live bar's end, plus the same right gap as "All".
+      const span = R / (1 - E.padFrac);
+      const t1 = maxT1(E, span);
+      return clampView({ t0: t1 - span, t1: t1 }, DATA);
     }
     function resolveView(DATA) {
       if (RANGE === "all") return null;
@@ -1455,8 +1479,15 @@
     function zoomAt(ux, factor) {
       if (!META) return;
       const v = curView();
-      const ta = timeAt(Math.max(META.L, Math.min(META.Rx, ux)), v);
+      const E = edgeInfo(activeData());
       const span = (v.t1 - v.t0) * factor;
+      if (atEnd(v, E)) {
+        // Showing the live bar: zoom keeps it and its right gap in place.
+        const t1 = maxT1(E, span);
+        setCustom({ t0: t1 - span, t1: t1 });
+        return;
+      }
+      const ta = timeAt(Math.max(META.L, Math.min(META.Rx, ux)), v);
       const k = span / (v.t1 - v.t0);
       setCustom({ t0: ta - (ta - v.t0) * k, t1: ta - (ta - v.t0) * k + span });
     }
@@ -1465,6 +1496,9 @@
     }
 
     canvas.addEventListener("wheel", function (e) {
+      // Plain wheel / trackpad scroll scrolls the page. Zoom needs Ctrl or
+      // Cmd (a trackpad pinch arrives as a Ctrl + wheel event).
+      if (!e.ctrlKey && !e.metaKey) return;
       const u = toUnits(e.clientX, e.clientY);
       if (!inPlot(u)) return;
       e.preventDefault();
@@ -1518,6 +1552,12 @@
         const d = Math.max(10, Math.abs(a[0].x - a[1].x));
         const m = (a[0].x + a[1].x) / 2;
         const span = (pinch.v.t1 - pinch.v.t0) * pinch.d / d;
+        const E = edgeInfo(activeData());
+        if (atEnd(pinch.v, E)) {
+          const t1 = maxT1(E, span);
+          setCustom({ t0: t1 - span, t1: t1 });
+          return;
+        }
         const frac = (m - META.L) / (META.Rx - META.L);
         const t0 = pinch.tm - frac * span;
         setCustom({ t0: t0, t1: t0 + span });
