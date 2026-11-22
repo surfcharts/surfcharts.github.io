@@ -1,9 +1,10 @@
 /* BTC vs 200W SMA — three zones (PADDLE / RIDE / KICK-OUT).
    Weekly or monthly high-low bars (real OHLC from CRYPTO:BTCUSD), Relative / Price and Weekly / Monthly toggles. Live Binance BTCUSDT
    (no key), falling back to the cached close. On-page mobile: CSS
-   width + DPR backing store. Share PNG is always the 1200×675
-   desktop card. Live-dot radius equals the line width (CSS/layout
-   px, then multiplied only by DPR). Local preview only. */
+   width + DPR backing store. Share PNG is the 1200-wide desktop
+   card; height grows slightly for header-to-plot gap. Live-dot
+   radius equals the line width (CSS/layout px, then multiplied
+   only by DPR). Local preview only. */
 (function () {
   "use strict";
   const FONT = 'system-ui,-apple-system,"Segoe UI",Roboto,Inter,sans-serif';
@@ -23,6 +24,11 @@
   };
   const ZONE_ORDER = ["paddle", "ride", "kick"];
   const SHARE_W = 1200, SHARE_H = 675, SHARE_D = 2;
+  // Share export only: extra space under the header so the site name
+  // and handle don't sit on the plot. On-page layout is unchanged.
+  const SHARE_PLOT_SHIFT = 32;
+  const SHARE_HANDLE_DY = 26; // gap from site-name baseline to the handle
+  const SHARE_KEY_SHIFT = 14; // extra gap from year labels to the zone key
   // Legend moved off the card; the plot uses that space. Year labels
   // still sit ~31px above the metrics divider.
   const DESKTOP_ST = {
@@ -552,7 +558,8 @@
       Tx(tfLabel, Pd + titleW2 + subGap, ST.ty, ST.wmc);
       titleEnd = Pd + titleW2 + subGap + subW;
     }
-    F(500, ST.wm); Tx(wmText, wmX, ST.ty, ST.share ? INK : ST.wmc, "right");
+    const wmY = ST.share && ST.wmY != null ? ST.wmY : ST.ty;
+    F(500, ST.wm); Tx(wmText, wmX, wmY, ST.share ? INK : ST.wmc, "right");
 
     const W = DATA.W, cl = DATA.cl, sm = DATA.sm, f = DATA.f;
     const tStart = ms(W[f][0]);
@@ -735,6 +742,7 @@
         lx = titleEnd + inGap; ly = ST.ty - (ST.mobile ? 2 : 4);
       } else {
         lx = L; ly = B + ST.yr + (ST.mobile ? 22 : 32);
+        if (ST.share) ly += SHARE_KEY_SHIFT;
       }
       const midY = ly - lgF * 0.33;
       x.save();
@@ -897,8 +905,9 @@
       x.textBaseline = "alphabetic";
       const wmX = ST.W - ST.Pd;
       // Small author credit under the site name.
+      const wmY = ST.wmY != null ? ST.wmY : ST.ty;
       F(500, 13);
-      Tx("by @_CryptoSurf", wmX, ST.ty + 20, ST.wmc, "right");
+      Tx("by @_CryptoSurf", wmX, wmY + SHARE_HANDLE_DY, ST.wmc, "right");
 
       const items = [
         { name: "ACCUMULATION", range: "", color: "#2e8bff" },
@@ -916,7 +925,7 @@
       widths.forEach(function (w, i) { total += w.w + (i ? itemGap : 0); });
       const isPrice = mode === "price";
       // Same row as the Price-view SMA legend (share Multiple also uses that band).
-      const y = meta.B + ST.yr + 32;
+      const y = meta.B + ST.yr + 32 + SHARE_KEY_SHIFT;
       let cx = (meta.L + meta.Rx) / 2 - total / 2;
       items.forEach(function (it, i) {
         F(700, keySize); Tx(it.name, cx, y, it.color);
@@ -934,9 +943,20 @@
       // Same plot bottom as Price, so the zone key gets a clear row under the years.
       if (mode !== "price") layout.B = 488;
       layout.share = true;
+      // Line the site name up with the title (cap-height, same header row).
+      // Handle stays under the site name. On-page typography is unchanged.
+      layout.wmY = layout.ty - Math.round((layout.tt - layout.wm) * 0.75);
+      // Push the plot and footer down together and grow the canvas by the
+      // same amount, so only the header-to-plot gap changes. Then add a
+      // little more room between the years and the zone key (and the
+      // metrics row below it) so nothing gets squeezed.
+      layout.T += SHARE_PLOT_SHIFT;
+      layout.B += SHARE_PLOT_SHIFT;
+      layout.ny += SHARE_PLOT_SHIFT + SHARE_KEY_SHIFT;
+      layout.H += SHARE_PLOT_SHIFT + SHARE_KEY_SHIFT;
       const off = document.createElement("canvas");
       off.width = SHARE_W * SHARE_D;
-      off.height = SHARE_H * SHARE_D;
+      off.height = layout.H * SHARE_D;
       const x = off.getContext("2d");
       x.scale(SHARE_D, SHARE_D);
       const meta = drawInto(x, mode, layout, DATA, def);
@@ -944,10 +964,10 @@
       TF = prev;
       const out = document.createElement("canvas");
       out.width = SHARE_W;
-      out.height = SHARE_H;
+      out.height = layout.H;
       const c = out.getContext("2d");
       c.imageSmoothingEnabled = true;
-      c.drawImage(off, 0, 0, SHARE_W, SHARE_H);
+      c.drawImage(off, 0, 0, SHARE_W, layout.H);
       return out;
     }
 
