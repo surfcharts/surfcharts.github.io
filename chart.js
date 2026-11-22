@@ -41,6 +41,7 @@
     lw: 3, smaw: 1.25, yearStep: 2,
   };
   const DAY = 864e5, PADW = 43, PADM = 10, MOBILE_MAX = 720;
+  const LEFT_BARS = 3; // small margin before the first bar, in bars
   const BN = "https://data-api.binance.vision/api/v3/ticker/price?symbol=";
   const COIN_DEFS = {
     btc:  { id: "btc",  name: "BTC",  data: "data/btc-weekly.json",
@@ -543,19 +544,19 @@
 
   // Full time domain of a card (same span the "All" view has always shown).
   function fullDomain(DATA) {
-    const W = DATA.W, f = DATA.f;
+    const W = DATA.W, f = DATA.f, n = W.length - 1;
     const isMonth = DATA.interval === "monthly";
-    // Same empty gap before the first bar as after the live bar, so the
-    // first bar never sits on the left axis.
-    return {
-      t0: isMonth
-        ? ms(addMonthsIso(W[f][0], -PADM))
-        : ms(W[f][0]) - PADW * 7 * DAY,
-      first: ms(W[f][0]),
-      t1: isMonth
-        ? ms(addMonthsIso(W[W.length - 1][0], 1 + PADM))
-        : ms(W[W.length - 1][0]) + (1 + PADW) * 7 * DAY,
-    };
+    const first = ms(W[f][0]);
+    const lastEnd = isMonth ? ms(addMonthsIso(W[n][0], 1)) : ms(W[n][0]) + 7 * DAY;
+    // Right gap after the live bar: unchanged share of the width (the
+    // layout that shipped with PADW/PADM empty time on both sides).
+    const oldT0 = isMonth ? ms(addMonthsIso(W[f][0], -PADM)) : first - PADW * 7 * DAY;
+    const oldT1 = isMonth ? ms(addMonthsIso(W[n][0], 1 + PADM)) : ms(W[n][0]) + (1 + PADW) * 7 * DAY;
+    const rf = (oldT1 - lastEnd) / (oldT1 - oldT0);
+    // Left: only a small margin of LEFT_BARS bars before the first bar.
+    const t0 = isMonth ? ms(addMonthsIso(W[f][0], -LEFT_BARS)) : first - LEFT_BARS * 7 * DAY;
+    const t1 = t0 + (lastEnd - t0) / (1 - rf);
+    return { t0: t0, first: first, t1: t1 };
   }
 
   // Close line, coloured by zone and cut exactly where the multiple crosses
@@ -1101,8 +1102,7 @@
       let span = Math.max(minSpan(DATA), v.t1 - v.t0);
       if (span >= full) return null;
       let t0 = v.t0, t1 = t0 + span;
-      // Left stop keeps the same share of empty space before the first bar.
-      const mn = dom.first - E.leftFrac * span;
+      const mn = dom.t0; // same few-bar margin as "All"; panning stops there
       if (t0 < mn) { t0 = mn; t1 = t0 + span; }
       const mx = maxT1(E, span);
       if (t1 > mx) { t1 = mx; t0 = t1 - span; }
