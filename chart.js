@@ -1,6 +1,6 @@
 /* BTC vs 200W SMA — three zones (PADDLE / RIDE / KICK-OUT).
-   Weekly or monthly high-low bars (real OHLC from CRYPTO:BTCUSD), Relative / Price and Weekly / Monthly toggles. Live Binance BTCUSDT
-   (no key), falling back to the cached close. On-page mobile: CSS
+   Weekly or monthly high-low bars (real OHLC from CRYPTO:BTCUSD), Relative / Price and Weekly / Monthly toggles. Live Bitstamp USD
+   (no key), falling back to Binance, then the cached close. On-page mobile: CSS
    width + DPR backing store. Share PNG is the 1200-wide desktop
    card; height grows slightly for header-to-plot gap. Live-dot
    radius equals the line width (CSS/layout px, then multiplied
@@ -43,25 +43,31 @@
   const DAY = 864e5, PADW = 43, PADM = 10, MOBILE_MAX = 720;
   const LEFT_BARS = 3; // small margin before the first bar, in bars
   const BN = "https://data-api.binance.vision/api/v3/ticker/price?symbol=";
+  const BS = "https://www.bitstamp.net/api/v2/ticker/";
   const COIN_DEFS = {
     btc:  { id: "btc",  name: "BTC",  data: "data/btc-weekly.json",
             monthly: "data/btc-monthly.json",
-            unit: "Price", liveUrl: BN + "BTCUSDT",  liveSrc: "Binance BTCUSDT" },
+            unit: "Price", liveUrl: BS + "btcusd", liveSrc: "Bitstamp BTCUSD",
+            liveFallback: BN + "BTCUSDT" },
     eth:  { id: "eth",  name: "ETH",  data: "data/eth-weekly.json",
             monthly: "data/eth-monthly.json",
-            unit: "Price", liveUrl: BN + "ETHUSDT",  liveSrc: "Binance ETHUSDT" },
+            unit: "Price", liveUrl: BS + "ethusd", liveSrc: "Bitstamp ETHUSD",
+            liveFallback: BN + "ETHUSDT" },
     ltc:  { id: "ltc",  name: "LTC",  data: "data/ltc-weekly.json",
             monthly: "data/ltc-monthly.json",
-            unit: "Price", liveUrl: BN + "LTCUSDT",  liveSrc: "Binance LTCUSDT" },
+            unit: "Price", liveUrl: BS + "ltcusd", liveSrc: "Bitstamp LTCUSD",
+            liveFallback: BN + "LTCUSDT" },
     doge: { id: "doge", name: "DOGE", data: "data/doge-weekly.json",
             monthly: "data/doge-monthly.json",
-            unit: "Price", liveUrl: BN + "DOGEUSDT", liveSrc: "Binance DOGEUSDT" },
+            unit: "Price", liveUrl: BS + "dogeusd", liveSrc: "Bitstamp DOGEUSD",
+            liveFallback: BN + "DOGEUSDT" },
     dash: { id: "dash", name: "DASH", data: "data/dash-weekly.json",
             monthly: "data/dash-monthly.json",
             unit: "Price", liveUrl: BN + "DASHUSDT", liveSrc: "Binance DASHUSDT" },
     zec:  { id: "zec",  name: "ZEC",  data: "data/zec-weekly.json",
             monthly: "data/zec-monthly.json",
-            unit: "Price", liveUrl: BN + "ZECUSDT",  liveSrc: "Binance ZECUSDT" },
+            unit: "Price", liveUrl: BS + "zecusd", liveSrc: "Bitstamp ZECUSD",
+            liveFallback: BN + "ZECUSDT" },
     totales: { id: "totales", name: "TOTALES", data: "data/totales-weekly.json",
             monthly: "data/totales-monthly.json",
             unit: "Market cap", liveUrl: null, liveSrc: "" },
@@ -82,6 +88,7 @@
   const COIN = COIN_DEFS[(Q.get("coin") || "btc").toLowerCase()] || COIN_DEFS.btc;
   const LIVE_URL = COIN.liveUrl || null;
   const LIVE_SRC = COIN.liveSrc;
+  const LIVE_FALLBACK = COIN.liveFallback || null;
   const SHARE = Q.get("share") === "1" || Q.get("cache") === "1";
   // Chart state lives in the URL (coin, view, tf, style, range or from/to),
   // so a copied link opens the same chart. Old ?mode=price links still work.
@@ -209,21 +216,46 @@
     return sm;
   }
 
-  function fetchLive() {
-    if (!LIVE_URL) return Promise.resolve(null);
+  function parseLivePrice(j) {
+    if (!j || typeof j !== "object") return NaN;
+    if (j.last !== undefined) return +j.last;
+    if (j.price !== undefined) return +j.price;
+    if (j.result) {
+      const k = Object.keys(j.result)[0];
+      if (k && j.result[k] && j.result[k].c) return +j.result[k].c[0];
+    }
+    return NaN;
+  }
+
+  // Bitstamp's CDN often drops CORS on cache:"no-store" (that mode can
+  // trigger a preflight) and on URLs with a trailing slash. Bust the
+  // cache with a query param instead. Binance / Kraken keep no-store.
+  function fetchTicker(url, source, bust) {
     const ac = new AbortController();
     const t = setTimeout(function () { ac.abort(); }, 5000);
-    return fetch(LIVE_URL, { signal: ac.signal, cache: "no-store" })
+    const req = bust ? url + (url.indexOf("?") >= 0 ? "&" : "?") + "t=" + Date.now() : url;
+    const opts = { signal: ac.signal };
+    if (!bust) opts.cache = "no-store";
+    return fetch(req, opts)
       .then(function (r) {
         if (!r.ok) throw new Error("http " + r.status);
         return r.json();
       })
       .then(function (j) {
-        const p = j.price !== undefined ? +j.price : +(j.result[Object.keys(j.result)[0]].c[0]);
+        const p = parseLivePrice(j);
         if (!(p > 0) || !isFinite(p)) throw new Error("bad price");
-        return { price: p, source: LIVE_SRC, url: LIVE_URL, at: Date.now() };
+        return { price: p, source: source, url: url, at: Date.now() };
       })
       .finally(function () { clearTimeout(t); });
+  }
+
+  function fetchLive() {
+    if (!LIVE_URL) return Promise.resolve(null);
+    const bust = LIVE_URL.indexOf("bitstamp.net") !== -1;
+    return fetchTicker(LIVE_URL, LIVE_SRC, bust).catch(function () {
+      if (!LIVE_FALLBACK) return Promise.reject(new Error("live failed"));
+      return fetchTicker(LIVE_FALLBACK, "Binance", false);
+    });
   }
 
   function desktopLayout(mode) {
@@ -1738,7 +1770,7 @@
   }
 
   // Small grey line under the chart: when the numbers were last updated,
-  // in the visitor's time zone, and where they come from.
+  // in the visitor's time zone.
   const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   function fmtStamp(d) {
     let tz = "";
@@ -1762,17 +1794,14 @@
     const first = SHARED.cards[0];
     const live = SHARED.live;
     const seg = function (t) { return '<span class="nowrap">' + t + "</span>"; };
-    let parts;
+    let text;
     if (first.liveOn && live) {
-      parts = ["Updated " + fmtStamp(new Date(live.at)),
-               "Price: " + LIVE_SRC.split(" ")[0],
-               "History: TradingView"];
+      text = "Updated " + fmtStamp(new Date(live.at));
     } else {
       const d = passDate(first.pass);
-      parts = ["Updated " + (d ? fmtStamp(d) : (first.pass || "")),
-               "Data: TradingView"];
+      text = "Updated " + (d ? fmtStamp(d) : (first.pass || ""));
     }
-    el.innerHTML = parts.map(function (t, i) { return seg(i < parts.length - 1 ? t + " \u00b7" : t); }).join(" ");
+    el.innerHTML = seg(text);
     el.hidden = false;
   }
 
