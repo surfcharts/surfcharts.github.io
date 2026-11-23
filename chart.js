@@ -29,6 +29,13 @@
   const SHARE_PLOT_SHIFT = 32;
   const SHARE_HANDLE_DY = 26; // gap from site-name baseline to the handle
   const SHARE_KEY_SHIFT = 14; // extra gap from year labels to the zone key
+  // Regular-view SMA legend only: a little extra space under the year
+  // labels so they don't sit tight. Multiple is unchanged. Share Regular
+  // uses this on top of SHARE_KEY_SHIFT; Share Multiple does not.
+  const PRICE_LEGEND_DY = 12;
+  // On-page desktop only: lift the coin title and handle together so
+  // Regular and Multiple share the same top gap. Share keeps the original ty.
+  const PRICE_TITLE_DY = 9;
   // Legend moved off the card; the plot uses that space. Year labels
   // still sit ~31px above the metrics divider.
   const DESKTOP_ST = {
@@ -111,7 +118,7 @@
   const CARD_DEFS = [{
     id: "200w", n: 200, smaLabel: "200W SMA", short: "200W",
     titleRel: COIN.name + " vs 200W SMA",
-    titlePrice: COIN.name + " vs 200W SMA",
+    titlePrice: COIN.name,
     ariaRel: COIN.name + " versus 200-week SMA, weekly high-low bars, multiple, three zones",
     ariaPrice: COIN.name + " " + (COIN.unit === "Market cap" ? "market cap" : "price") + " versus 200-week SMA, weekly high-low bars, three zones",
     file: COIN.id + "-200w-weekly",
@@ -1012,7 +1019,7 @@
       if (false) {
         lx = titleEnd + inGap; ly = ST.ty - (ST.mobile ? 2 : 4);
       } else {
-        lx = L; ly = B + ST.yr + (ST.mobile ? 22 : 32);
+        lx = L; ly = B + ST.yr + (ST.mobile ? 22 : 32) + PRICE_LEGEND_DY;
         if (ST.share) ly += SHARE_KEY_SHIFT;
       }
       const midY = ly - lgF * 0.33;
@@ -1128,7 +1135,9 @@
       if (SHARE) return desktopLayout(mode);
       const cssW = stage && stage.clientWidth ? stage.clientWidth : (window.innerWidth || SHARE_W);
       if (cssW < MOBILE_MAX) return mobileLayout(cssW, mode);
-      return desktopLayout(mode);
+      const layout = desktopLayout(mode);
+      layout.ty -= PRICE_TITLE_DY;
+      return layout;
     }
 
     function minSpan(DATA) {
@@ -1326,7 +1335,7 @@
       widths.forEach(function (w, i) { total += w.w + (i ? itemGap : 0); });
       const isPrice = mode === "price";
       // Same row as the Price-view SMA legend (share Multiple also uses that band).
-      const y = meta.B + ST.yr + 32 + SHARE_KEY_SHIFT;
+      const y = meta.B + ST.yr + 32 + SHARE_KEY_SHIFT + (isPrice ? PRICE_LEGEND_DY : 0);
       let cx = (meta.L + meta.Rx) / 2 - total / 2;
       items.forEach(function (it, i) {
         F(700, keySize); Tx(it.name, cx, y, it.color);
