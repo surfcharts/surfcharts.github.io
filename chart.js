@@ -1,6 +1,6 @@
 /* BTC vs 200W SMA — three zones (PADDLE / RIDE / KICK-OUT).
    Weekly or monthly high-low bars (real OHLC from CRYPTO:BTCUSD), Relative / Price and Weekly / Monthly toggles. Live Bitstamp USD
-   (no key), falling back to Binance, then the cached close. On-page mobile: CSS
+   (no key), falling back to Kraken, then Coinbase, then the cached close. On-page mobile: CSS
    width + DPR backing store. Share PNG is the 1200-wide desktop
    card; height grows slightly for header-to-plot gap. Live-dot
    radius equals the line width (CSS/layout px, then multiplied
@@ -49,32 +49,39 @@
   };
   const DAY = 864e5, PADW = 43, PADM = 10, MOBILE_MAX = 720;
   const LEFT_BARS = 3; // small margin before the first bar, in bars
-  const BN = "https://data-api.binance.vision/api/v3/ticker/price?symbol=";
   const BS = "https://www.bitstamp.net/api/v2/ticker/";
+  const KK = "https://api.kraken.com/0/public/Ticker?pair=";
+  const CB = "https://api.exchange.coinbase.com/products/";
   const COIN_DEFS = {
     btc:  { id: "btc",  name: "BTC",  data: "data/btc-weekly.json",
             monthly: "data/btc-monthly.json",
             unit: "Price", liveUrl: BS + "btcusd", liveSrc: "Bitstamp BTCUSD",
-            liveFallback: BN + "BTCUSDT" },
+            liveFallback: KK + "XBTUSD", liveFallbackSrc: "Kraken XBTUSD",
+            liveFallback2: CB + "BTC-USD/ticker", liveFallback2Src: "Coinbase BTC-USD" },
     eth:  { id: "eth",  name: "ETH",  data: "data/eth-weekly.json",
             monthly: "data/eth-monthly.json",
             unit: "Price", liveUrl: BS + "ethusd", liveSrc: "Bitstamp ETHUSD",
-            liveFallback: BN + "ETHUSDT" },
+            liveFallback: KK + "ETHUSD", liveFallbackSrc: "Kraken ETHUSD",
+            liveFallback2: CB + "ETH-USD/ticker", liveFallback2Src: "Coinbase ETH-USD" },
     ltc:  { id: "ltc",  name: "LTC",  data: "data/ltc-weekly.json",
             monthly: "data/ltc-monthly.json",
             unit: "Price", liveUrl: BS + "ltcusd", liveSrc: "Bitstamp LTCUSD",
-            liveFallback: BN + "LTCUSDT" },
+            liveFallback: KK + "LTCUSD", liveFallbackSrc: "Kraken LTCUSD",
+            liveFallback2: CB + "LTC-USD/ticker", liveFallback2Src: "Coinbase LTC-USD" },
     doge: { id: "doge", name: "DOGE", data: "data/doge-weekly.json",
             monthly: "data/doge-monthly.json",
             unit: "Price", liveUrl: BS + "dogeusd", liveSrc: "Bitstamp DOGEUSD",
-            liveFallback: BN + "DOGEUSDT" },
+            liveFallback: KK + "XDGUSD", liveFallbackSrc: "Kraken XDGUSD",
+            liveFallback2: CB + "DOGE-USD/ticker", liveFallback2Src: "Coinbase DOGE-USD" },
     dash: { id: "dash", name: "DASH", data: "data/dash-weekly.json",
             monthly: "data/dash-monthly.json",
-            unit: "Price", liveUrl: BN + "DASHUSDT", liveSrc: "Binance DASHUSDT" },
+            unit: "Price", liveUrl: KK + "DASHUSD", liveSrc: "Kraken DASHUSD",
+            liveFallback: CB + "DASH-USD/ticker", liveFallbackSrc: "Coinbase DASH-USD" },
     zec:  { id: "zec",  name: "ZEC",  data: "data/zec-weekly.json",
             monthly: "data/zec-monthly.json",
             unit: "Price", liveUrl: BS + "zecusd", liveSrc: "Bitstamp ZECUSD",
-            liveFallback: BN + "ZECUSDT" },
+            liveFallback: KK + "ZECUSD", liveFallbackSrc: "Kraken ZECUSD",
+            liveFallback2: CB + "ZEC-USD/ticker", liveFallback2Src: "Coinbase ZEC-USD" },
     totales: { id: "totales", name: "TOTALES", data: "data/totales-weekly.json",
             monthly: "data/totales-monthly.json",
             unit: "Market cap", liveUrl: null, liveSrc: "" },
@@ -89,13 +96,13 @@
             unit: "Market cap", liveUrl: null, liveSrc: "" },
     xmr:  { id: "xmr",  name: "XMR",  data: "data/xmr-weekly.json",
             monthly: "data/xmr-monthly.json",
-            unit: "Price", liveUrl: "https://api.kraken.com/0/public/Ticker?pair=XMRUSD", liveSrc: "Kraken XMRUSD" },
+            unit: "Price", liveUrl: KK + "XMRUSD", liveSrc: "Kraken XMRUSD" },
   };
+
   const Q = new URLSearchParams(location.search);
   const COIN = COIN_DEFS[(Q.get("coin") || "btc").toLowerCase()] || COIN_DEFS.btc;
   const LIVE_URL = COIN.liveUrl || null;
   const LIVE_SRC = COIN.liveSrc;
-  const LIVE_FALLBACK = COIN.liveFallback || null;
   const SHARE = Q.get("share") === "1" || Q.get("cache") === "1";
   // Chart state lives in the URL (coin, view, tf, style, range or from/to),
   // so a copied link opens the same chart. Old ?mode=price links still work.
@@ -241,7 +248,7 @@
 
   // Bitstamp's CDN often drops CORS on cache:"no-store" (that mode can
   // trigger a preflight) and on URLs with a trailing slash. Bust the
-  // cache with a query param instead. Binance / Kraken keep no-store.
+  // cache with a query param instead. Kraken / Coinbase keep no-store.
   function fetchTicker(url, source, bust) {
     const ac = new AbortController();
     const t = setTimeout(function () { ac.abort(); }, 5000);
@@ -263,11 +270,22 @@
 
   function fetchLive() {
     if (!LIVE_URL) return Promise.resolve(null);
-    const bust = LIVE_URL.indexOf("bitstamp.net") !== -1;
-    return fetchTicker(LIVE_URL, LIVE_SRC, bust).catch(function () {
-      if (!LIVE_FALLBACK) return Promise.reject(new Error("live failed"));
-      return fetchTicker(LIVE_FALLBACK, "Binance", false);
-    });
+    const steps = [
+      { url: LIVE_URL, source: LIVE_SRC, bust: LIVE_URL.indexOf("bitstamp.net") !== -1 },
+    ];
+    if (COIN.liveFallback) {
+      steps.push({ url: COIN.liveFallback, source: COIN.liveFallbackSrc || "Kraken", bust: false });
+    }
+    if (COIN.liveFallback2) {
+      steps.push({ url: COIN.liveFallback2, source: COIN.liveFallback2Src || "Coinbase", bust: false });
+    }
+    let p = fetchTicker(steps[0].url, steps[0].source, steps[0].bust);
+    for (let i = 1; i < steps.length; i++) {
+      (function (step) {
+        p = p.catch(function () { return fetchTicker(step.url, step.source, step.bust); });
+      })(steps[i]);
+    }
+    return p;
   }
 
   function desktopLayout(mode) {
@@ -1787,7 +1805,7 @@
     if (first.liveOn) {
       const d = new Date(live.at);
       el.textContent = "Live price \u00b7 updated " + fmtHM(d);
-      el.title = LIVE_SRC + " \u00b7 " + d.toLocaleString();
+      el.title = (live && live.source ? live.source : LIVE_SRC) + " \u00b7 " + d.toLocaleString();
     } else if (COIN.unit === "Market cap") {
       el.textContent = "Market cap \u00b7 last weekly close \u00b7 " + fmtCached(first.pass);
       el.title = first.source || "cached";
