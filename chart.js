@@ -204,6 +204,11 @@
     // Weekly bars are Monday-start; the close lands on Sunday (start + 6 days).
     return addDaysIso(startIso, 6);
   }
+  function weekStartOnOrBefore(iso) {
+    const dow = new Date(ms(iso)).getUTCDay(); // 0 Sun .. 1 Mon, UTC
+    const back = (dow + 6) % 7; // days since Monday
+    return addDaysIso(iso, -back);
+  }
 
   function smaArr(closes, n) {
     const sm = new Array(closes.length).fill(null);
@@ -309,11 +314,18 @@
     const cachedClose = W.length ? +W[W.length - 1][4] : null;
     const liveOn = !!(live && live.price > 0);
     const lastPx = liveOn ? live.price : cachedClose;
-    if (W.length) {
+    if (W.length && liveOn) {
       // Live close feeds the 200W SMA. Live price also extends the
       // in-progress week's real high or low; it never invents a range.
-      W[W.length - 1][4] = lastPx;
-      if (liveOn) {
+      // Once a new week has begun (Monday 00:00 UTC), do not overwrite
+      // the closed week — open a new bar from the live tick only.
+      const todayIso = new Date(live.at || Date.now()).toISOString().slice(0, 10);
+      const currentStart = weekStartOnOrBefore(todayIso);
+      const lastStart = W[W.length - 1][0];
+      if (lastStart < currentStart) {
+        W.push([currentStart, lastPx, lastPx, lastPx, lastPx]);
+      } else {
+        W[W.length - 1][4] = lastPx;
         const last = W[W.length - 1];
         last[2] = Math.max(+last[2], lastPx);
         last[3] = Math.min(+last[3], lastPx);
@@ -412,9 +424,16 @@
     const cachedClose = W.length ? +W[W.length - 1][4] : null;
     const liveOn = !!(live && live.price > 0);
     const lastPx = liveOn ? live.price : (weeklyData && weeklyData.lastPx) || cachedClose;
-    if (W.length) {
-      W[W.length - 1][4] = lastPx;
-      if (liveOn) {
+    if (W.length && liveOn) {
+      // Same rule as weekly: once a new month has begun, do not overwrite
+      // the closed month — open a new bar from the live tick only.
+      const todayIso = new Date(live.at || Date.now()).toISOString().slice(0, 10);
+      const currentMonth = todayIso.slice(0, 8) + "01";
+      const lastMonth = String(W[W.length - 1][0]).slice(0, 8) + "01";
+      if (lastMonth < currentMonth) {
+        W.push([currentMonth, lastPx, lastPx, lastPx, lastPx]);
+      } else {
+        W[W.length - 1][4] = lastPx;
         const last = W[W.length - 1];
         last[2] = Math.max(+last[2], lastPx);
         last[3] = Math.min(+last[3], lastPx);
