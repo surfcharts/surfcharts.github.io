@@ -525,21 +525,13 @@ body.share-only .wave-line { display: none; }
 .info h2{font-size:17px}
 .info .disclaimer{line-height:1.45}
 
-/* Chart tools: style, RSI toggle, line tool, visible range */
+/* Chart tools: Candle / Line and visible range (1Y / 4Y / All) */
 .chart-tools {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
   margin: -2px 0 10px;
-  flex-wrap: wrap;
-}
-.chart-tools-left,
-.chart-tools-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 .card.is-short .chart-tools { display: none; }
 .toggle.toggle-sm button {
@@ -548,19 +540,9 @@ body.share-only .wave-line { display: none; }
   padding: 5px 12px;
   font-size: 13px;
 }
-.toggle button[aria-pressed="true"] {
-  background: var(--btn);
-  color: var(--ink);
-}
-.toggle button:focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 2px;
-  z-index: 1;
-}
 .stage { position: relative; }
 .stage canvas { touch-action: pan-y; cursor: crosshair; }
 .stage canvas.is-dragging { cursor: grabbing; }
-.stage canvas.is-drawing { cursor: crosshair; touch-action: none; }
 .stage canvas.xhair {
   position: absolute;
   pointer-events: none;
