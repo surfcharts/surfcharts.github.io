@@ -121,12 +121,19 @@
     return { range: "all" };
   })();
   const START_PANELS = (function () {
-    const v = (Q.get("panels") || "").toLowerCase().replace(/\s+/g, "");
-    if (v === "rsi") return { showPrice: false, showRsi: true };
-    if (v === "both" || v === "price,rsi" || v === "rsi,price") {
+    const rsi = (Q.get("rsi") || "").toLowerCase().replace(/\s+/g, "");
+    if (rsi === "1" || rsi === "true" || rsi === "on" || rsi === "yes") {
       return { showPrice: true, showRsi: true };
     }
-    // Default, bare links, and old ?panels=price: price only.
+    if (rsi === "0" || rsi === "false" || rsi === "off") {
+      return { showPrice: true, showRsi: false };
+    }
+    // Old ?panels= links: "both" or "rsi" turn RSI on (the main chart always shows).
+    // "price", bare URLs, and anything else stay off.
+    const v = (Q.get("panels") || "").toLowerCase().replace(/\s+/g, "");
+    if (v === "both" || v === "price,rsi" || v === "rsi,price" || v === "rsi") {
+      return { showPrice: true, showRsi: true };
+    }
     return { showPrice: true, showRsi: false };
   })();
   const SHARE_CARD = (Q.get("card") || "").toLowerCase();
@@ -607,18 +614,14 @@
   const RSI_GAP_DESKTOP = 20, RSI_GAP_MOBILE = 16;
 
   function applyPanelLayout(layout, panels) {
-    const showPrice = !panels || panels.showPrice !== false;
     const showRsi = !!(panels && panels.showRsi);
-    // RSI-only has no SMA legend or zone key, so use the full plot bottom.
-    if (showRsi && !showPrice && !layout.mobile && layout.B < DESKTOP_ST.B) {
-      layout.B = DESKTOP_ST.B;
-    }
-    layout.showPrice = showPrice;
+    // The main chart always shows. RSI is an optional panel underneath.
+    layout.showPrice = true;
     layout.showRsi = showRsi;
     layout.plotT = layout.T;
     layout.plotB = layout.B;
     layout.axisB = layout.B;
-    if (showPrice && showRsi) {
+    if (showRsi) {
       const priceH = Math.max(1, layout.B - layout.T);
       const gap = layout.mobile ? RSI_GAP_MOBILE : RSI_GAP_DESKTOP;
       // 0-100 band is ~30% of the price plot; padding is added on top of that
@@ -632,9 +635,6 @@
       layout.axisB = layout.rsiB;
       layout.ny += delta;
       layout.H += delta;
-    } else if (showRsi && !showPrice) {
-      layout.rsiT = layout.T;
-      layout.rsiB = layout.B;
     }
     return layout;
   }
@@ -883,7 +883,7 @@
     const showPrice = ST.showPrice !== false;
     const showRsi = !!ST.showRsi;
     const tfLabel = isMonth ? "Monthly" : "Weekly";
-    const title = !showPrice ? (COIN.name + " RSI") : (isPrice ? def.titlePrice : def.titleRel);
+    const title = isPrice ? def.titlePrice : def.titleRel;
     F(600, ST.tt);
     const titleW = x.measureText(title).width;
     F(500, ST.wm);
@@ -1266,7 +1266,7 @@
     const groupTf = root.querySelector(".toggle-tf");
     const groupStyle = root.querySelector(".toggle-style");
     const groupRange = root.querySelector(".toggle-range");
-    const groupPanels = root.querySelector(".toggle-panels");
+    const groupRsi = root.querySelector(".toggle-rsi");
     const shareBtn = root.querySelector(".share");
     let MODE = START;
     let TF = START_TF;
@@ -1385,13 +1385,12 @@
       clearTimeout(urlT);
       urlT = setTimeout(function () {
         const P = new URLSearchParams(location.search);
-        ["coin", "view", "mode", "tf", "style", "range", "from", "to", "panels"].forEach(function (k) { P.delete(k); });
+        ["coin", "view", "mode", "tf", "style", "range", "from", "to", "panels", "rsi"].forEach(function (k) { P.delete(k); });
         if (COIN.id !== "btc") P.set("coin", COIN.id);
         if (MODE === "price") P.set("view", "regular");
         if (TF === "monthly") P.set("tf", "monthly");
         if (STYLE === "line") P.set("style", "line");
-        if (PANELS.showPrice && PANELS.showRsi) P.set("panels", "both");
-        else if (!PANELS.showPrice && PANELS.showRsi) P.set("panels", "rsi");
+        if (PANELS.showRsi) P.set("rsi", "1");
         if (RANGE === "1y" || RANGE === "4y") P.set("range", RANGE);
         else if (RANGE === "custom" && VIEW) {
           const iso = function (t) { return new Date(t).toISOString().slice(0, 10); };
@@ -1426,10 +1425,9 @@
           b.setAttribute("aria-checked", b.getAttribute("data-range") === RANGE ? "true" : "false");
         });
       }
-      if (groupPanels) {
-        groupPanels.querySelectorAll("[data-panel]").forEach(function (b) {
-          const on = b.getAttribute("data-panel") === "rsi" ? PANELS.showRsi : PANELS.showPrice;
-          b.setAttribute("aria-pressed", on ? "true" : "false");
+      if (groupRsi) {
+        groupRsi.querySelectorAll("button").forEach(function (b) {
+          b.setAttribute("aria-pressed", PANELS.showRsi ? "true" : "false");
         });
       }
     }
@@ -1463,31 +1461,26 @@
       return meta;
     }
 
-    function setPanels(spec, opts) {
-      let next;
-      if (spec === "price") next = { showPrice: true, showRsi: false };
-      else if (spec === "rsi") next = { showPrice: false, showRsi: true };
-      else if (spec === "both") next = { showPrice: true, showRsi: true };
-      else if (spec && typeof spec === "object") {
-        next = { showPrice: !!spec.showPrice, showRsi: !!spec.showRsi };
-      } else return PANELS;
-      if (!next.showPrice && !next.showRsi) return PANELS;
-      PANELS = next;
+    function setRsi(on, opts) {
+      PANELS = { showPrice: true, showRsi: !!on };
       syncToggles();
       const meta = draw(MODE);
-      if (opts && opts.focus && groupPanels) {
-        const el = groupPanels.querySelector("[data-panel]");
+      if (opts && opts.focus && groupRsi) {
+        const el = groupRsi.querySelector("button");
         if (el) el.focus();
       }
       return meta;
     }
-    function togglePanel(name) {
-      const next = { showPrice: PANELS.showPrice, showRsi: PANELS.showRsi };
-      if (name === "rsi") next.showRsi = !next.showRsi;
-      else next.showPrice = !next.showPrice;
-      if (!next.showPrice && !next.showRsi) return; // keep at least one on
-      setPanels(next);
+    function setPanels(spec, opts) {
+      // The main chart always stays on. "rsi" / "both" turn the RSI panel on;
+      // "price" or a missing showRsi turns it off. Old RSI-only calls still work.
+      if (spec === true || spec === false) return setRsi(spec, opts);
+      if (spec === "price") return setRsi(false, opts);
+      if (spec === "rsi" || spec === "both") return setRsi(true, opts);
+      if (spec && typeof spec === "object") return setRsi(!!spec.showRsi, opts);
+      return PANELS;
     }
+    function toggleRsi() { setRsi(!PANELS.showRsi); }
     function setMode(mode, opts) {
       MODE = mode === "price" ? "price" : "relative";
       syncToggles();
@@ -1527,9 +1520,6 @@
       F(500, 13);
       Tx("by @_CryptoSurf", wmX, wmY + SHARE_HANDLE_DY, ST.wmc, "right");
 
-      // Zone key is about the 200W SMA, so it stays off an RSI-only share.
-      if (ST.showPrice === false) return;
-
       const items = [
         { name: "ACCUMULATION", range: "", color: "#0CD7F1" },
         { name: "NEUTRAL", range: "", color: "#e6e8eb" },
@@ -1565,9 +1555,8 @@
       // The crosshair lives on its own overlay, so it never gets in here.
       layout.view = resolveView(DATA);
       layout.style = STYLE;
-      // Same plot bottom as Price, so the zone key gets a clear row under the years.
-      // RSI-only has no zone key: keep the full plot so the panel isn't short.
-      if (mode !== "price" && PANELS.showPrice) layout.B = 488;
+      // Same plot bottom as Regular, so the zone key gets a clear row under the years.
+      if (mode !== "price") layout.B = 488;
       layout.share = true;
       // Line the site name up with the title (cap-height, same header row).
       // Handle stays under the site name. On-page typography is unchanged.
@@ -1578,7 +1567,7 @@
       // metrics row below it) so nothing gets squeezed.
       layout.T += SHARE_PLOT_SHIFT;
       layout.B += SHARE_PLOT_SHIFT;
-      const keyShift = PANELS.showPrice ? SHARE_KEY_SHIFT : 0;
+      const keyShift = SHARE_KEY_SHIFT;
       layout.ny += SHARE_PLOT_SHIFT + keyShift;
       layout.H += SHARE_PLOT_SHIFT + keyShift;
       applyPanelLayout(layout, PANELS);
@@ -1683,11 +1672,10 @@
     }
     bindRadio(groupStyle, "data-style", setStyle, ["candle", "line"]);
     bindRadio(groupRange, "data-range", setRange, ["1y", "4y", "all"]);
-    if (groupPanels) {
-      groupPanels.addEventListener("click", function (e) {
-        const b = e.target.closest("[data-panel]");
-        if (!b) return;
-        togglePanel(b.getAttribute("data-panel"));
+    if (groupRsi) {
+      groupRsi.addEventListener("click", function (e) {
+        if (!e.target.closest("button")) return;
+        toggleRsi();
       });
     }
 
@@ -1982,8 +1970,9 @@
       getRange: function () { return { range: RANGE, view: resolveView(activeData()) }; },
       getMeta: function () { return META; },
       setHover: function (ux) { HOVER = ux; drawOverlay(); return nearestPt(ux); },
+      setRsi: setRsi,
       setPanels: setPanels,
-      getPanels: function () { return { showPrice: PANELS.showPrice, showRsi: PANELS.showRsi }; },
+      getPanels: function () { return { showPrice: true, showRsi: PANELS.showRsi }; },
       draw: draw,
       onResize: onResize,
       exportPng: function (mode, tf) { return renderShareCanvas(mode || MODE, tf || TF).toDataURL("image/png"); },

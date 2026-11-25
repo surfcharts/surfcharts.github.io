@@ -525,7 +525,7 @@ body.share-only .wave-line { display: none; }
 .info h2{font-size:17px}
 .info .disclaimer{line-height:1.45}
 
-/* Chart tools: style, panels, visible range */
+/* Chart tools: style, RSI toggle, visible range */
 .chart-tools {
   display: flex;
   justify-content: space-between;
