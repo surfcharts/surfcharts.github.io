@@ -120,6 +120,15 @@
     }
     return { range: "all" };
   })();
+  const START_PANELS = (function () {
+    const v = (Q.get("panels") || "").toLowerCase().replace(/\s+/g, "");
+    if (v === "rsi") return { showPrice: false, showRsi: true };
+    if (v === "both" || v === "price,rsi" || v === "rsi,price") {
+      return { showPrice: true, showRsi: true };
+    }
+    // Default, bare links, and old ?panels=price: price only.
+    return { showPrice: true, showRsi: false };
+  })();
   const SHARE_CARD = (Q.get("card") || "").toLowerCase();
 
   const CARD_DEFS = [{
@@ -407,6 +416,7 @@
     return {
       id: def.id, n: def.n, smaLabel: def.smaLabel, short: def.short,
       W: W, cl: cl, hi: hi, lo: loA, sm: sm, f: f,
+      rsi: wilderRsi(cl, 14),
       source: jw.source || "",
       pass: jw.pass || "",
       liveOn: liveOn,
@@ -540,6 +550,7 @@
     return {
       id: def.id, n: def.n, smaLabel: def.smaLabel, short: def.short,
       W: W, cl: cl, hi: hi, lo: loA, sm: sm, f: f,
+      rsi: wilderRsi(cl, 14),
       source: jm.source || "",
       pass: jm.pass || "",
       liveOn: liveOn,
@@ -563,6 +574,261 @@
       interval: "monthly",
       smaWeekly: smaWeekly,
     };
+  }
+
+  // Wilder's RSI: first average is the SMA of the first `period` changes,
+  // then each step is (prev * (period-1) + current) / period.
+  function wilderRsi(closes, period) {
+    const n = closes.length;
+    const out = new Array(n).fill(null);
+    if (n <= period) return out;
+    let gain = 0, loss = 0;
+    for (let i = 1; i <= period; i++) {
+      const ch = closes[i] - closes[i - 1];
+      if (ch > 0) gain += ch;
+      else loss -= ch;
+    }
+    let avgG = gain / period, avgL = loss / period;
+    const value = function () {
+      if (avgL === 0) return avgG === 0 ? 50 : 100;
+      if (avgG === 0) return 0;
+      return 100 - 100 / (1 + avgG / avgL);
+    };
+    out[period] = value();
+    for (let i = period + 1; i < n; i++) {
+      const ch = closes[i] - closes[i - 1];
+      const g = ch > 0 ? ch : 0, l = ch < 0 ? -ch : 0;
+      avgG = (avgG * (period - 1) + g) / period;
+      avgL = (avgL * (period - 1) + l) / period;
+      out[i] = value();
+    }
+    return out;
+  }
+  const RSI_GAP_DESKTOP = 20, RSI_GAP_MOBILE = 16;
+  const DRAW_LS_KEY = "surfcharts-drawings-v1";
+
+  function applyPanelLayout(layout, panels) {
+    const showPrice = !panels || panels.showPrice !== false;
+    const showRsi = !!(panels && panels.showRsi);
+    // RSI-only has no SMA legend or zone key, so use the full plot bottom.
+    if (showRsi && !showPrice && !layout.mobile && layout.B < DESKTOP_ST.B) {
+      layout.B = DESKTOP_ST.B;
+    }
+    layout.showPrice = showPrice;
+    layout.showRsi = showRsi;
+    layout.plotT = layout.T;
+    layout.plotB = layout.B;
+    layout.axisB = layout.B;
+    if (showPrice && showRsi) {
+      const priceH = Math.max(1, layout.B - layout.T);
+      const gap = layout.mobile ? RSI_GAP_MOBILE : RSI_GAP_DESKTOP;
+      // 0-100 band is ~30% of the price plot; padding is added on top of that
+      // so peaks don't sit on the panel edge.
+      const pad = layout.mobile ? 8 : 14;
+      const inner = Math.max(layout.mobile ? 84 : 124, Math.round(priceH * 0.30));
+      const rh = inner + 2 * pad;
+      layout.rsiT = layout.B + gap;
+      layout.rsiB = layout.rsiT + rh;
+      const delta = layout.rsiB - layout.B;
+      layout.axisB = layout.rsiB;
+      layout.ny += delta;
+      layout.H += delta;
+    } else if (showRsi && !showPrice) {
+      layout.rsiT = layout.T;
+      layout.rsiB = layout.B;
+    }
+    return layout;
+  }
+
+  function loadDrawStore() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(DRAW_LS_KEY) || "{}");
+      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    } catch (e) { return {}; }
+  }
+  function saveDrawStore(store) {
+    try { localStorage.setItem(DRAW_LS_KEY, JSON.stringify(store)); } catch (e) { /* quota / private */ }
+  }
+  function newDrawId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function rsiPad(rT, rB) {
+    const h = Math.max(1, rB - rT);
+    return Math.max(8, Math.min(18, Math.round(h * 0.09)));
+  }
+  function rsiYAt(v, rT, rB) {
+    const pad = rsiPad(rT, rB);
+    const top = rT + pad, bot = rB - pad;
+    return top + ((100 - v) / 100) * (bot - top);
+  }
+  function rsiAtY(py, rT, rB) {
+    const pad = rsiPad(rT, rB);
+    const top = rT + pad, bot = rB - pad;
+    if (!(bot > top)) return 50;
+    return 100 * (bot - py) / (bot - top);
+  }
+
+  function drawZonedRsi(x, pts, ST, L, Rx, rT, rB) {
+    const usable = pts.filter(function (q) { return q.rsi != null && isFinite(q.rsi); });
+    if (usable.length < 2) return;
+    const lw = ST.mobile ? 1.5 : 1.85;
+    x.save();
+    x.beginPath();
+    x.rect(L, rT, Math.max(0, Rx - L), Math.max(0, rB - rT));
+    x.clip();
+    x.lineWidth = lw;
+    x.lineJoin = "round";
+    x.lineCap = "butt";
+    x.strokeStyle = "#e6e8eb";
+    x.beginPath();
+    usable.forEach(function (q, i) {
+      const y = rsiYAt(q.rsi, rT, rB);
+      if (i) x.lineTo(q.cx, y); else x.moveTo(q.cx, y);
+    });
+    x.stroke();
+    x.restore();
+  }
+
+  function drawRsiPanel(x, ST, L, Rx, rT, rB, F, Tx) {
+    // Clear gutter + rule between the price plot and RSI.
+    if (ST.showPrice && ST.plotB != null && rT > ST.plotB + 4) {
+      const mid = Math.round((ST.plotB + rT) / 2);
+      x.fillStyle = "#2c333d";
+      x.fillRect(L, mid, Rx - L, 1);
+    }
+    // Guide levels stay 30 / 50 / 70 / 90 on every timeframe.
+    const refs = [30, 50, 70, 90];
+    refs.forEach(function (v) {
+      const y = Math.round(rsiYAt(v, rT, rB));
+      x.fillStyle = v === 50 ? "#3a4350" : "#323a45";
+      x.fillRect(L, y, Rx - L, 1);
+      F(400, ST.fs);
+      Tx(String(v), L - 6, y + ST.fs * 0.35, v === 50 ? GREY : AX, "right");
+    });
+    // Small "RSI 14" tag at the top-right, away from the early spikes.
+    const tag = "RSI 14";
+    F(600, ST.mobile ? 10 : 12);
+    const tw = x.measureText(tag).width;
+    const tx = Rx - tw - (ST.mobile ? 6 : 8);
+    const ty = rT + (ST.mobile ? 13 : 16);
+    x.fillStyle = "rgba(18,22,28,0.72)";
+    x.fillRect(tx - 3, ty - (ST.mobile ? 10 : 12), tw + 6, ST.mobile ? 13 : 16);
+    Tx(tag, tx, ty, SMA_C, "left");
+  }
+
+  function lineEnds(ln, meta) {
+    const L = meta.L, Rx = meta.Rx;
+    if (ln.kind === "horiz") {
+      const y = valueToY(ln.v0, ln.panel, meta);
+      return { x0: L, y0: y, x1: Rx, y1: y };
+    }
+    return {
+      x0: timeToX(ln.t0, meta), y0: valueToY(ln.v0, ln.panel, meta),
+      x1: timeToX(ln.t1, meta), y1: valueToY(ln.v1, ln.panel, meta),
+    };
+  }
+  function timeToX(t, meta) {
+    return meta.L + ((t - meta.t0) / (meta.t1 - meta.t0)) * (meta.Rx - meta.L);
+  }
+  function xToTime(px, meta) {
+    return meta.t0 + ((px - meta.L) / (meta.Rx - meta.L)) * (meta.t1 - meta.t0);
+  }
+  function valueToY(v, panel, meta) {
+    if (panel === "rsi") return rsiYAt(v, meta.rsiT, meta.rsiB);
+    const T = meta.T, B = meta.B;
+    const l1 = Math.log10(meta.top), l0 = Math.log10(meta.bot);
+    return T + ((l1 - Math.log10(Math.max(v, 1e-12))) / (l1 - l0)) * (B - T);
+  }
+  function yToValue(py, panel, meta) {
+    if (panel === "rsi") {
+      return Math.max(0, Math.min(100, rsiAtY(py, meta.rsiT, meta.rsiB)));
+    }
+    const T = meta.T, B = meta.B;
+    const l1 = Math.log10(meta.top), l0 = Math.log10(meta.bot);
+    const frac = (py - T) / (B - T);
+    return Math.pow(10, l1 - frac * (l1 - l0));
+  }
+  function panelClip(panel, meta) {
+    if (panel === "rsi") return { T: meta.rsiT, B: meta.rsiB };
+    return { T: meta.T, B: meta.B };
+  }
+  function distToSeg(px, py, x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((px - x0) * dx + (py - y0) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const x = x0 + t * dx, y = y0 + t * dy;
+    return Math.hypot(px - x, py - y);
+  }
+  function delButtonPos(ends, meta) {
+    const mx = (ends.x0 + ends.x1) / 2;
+    const my = (ends.y0 + ends.y1) / 2;
+    const clip = { T: Math.min(ends.y0, ends.y1), B: Math.max(ends.y0, ends.y1) };
+    const r = 9;
+    let x = Math.max(meta.L + r + 2, Math.min(meta.Rx - r - 2, mx));
+    let y = my - 16;
+    const top = meta.showPrice && meta.showRsi
+      ? Math.min(meta.T, meta.rsiT)
+      : (meta.showRsi ? meta.rsiT : meta.T);
+    if (y < top + r + 2) y = my + 16;
+    return { x: x, y: y, r: r };
+  }
+  function drawCommittedLines(x, lines, meta, ST, selectedId, withDelete) {
+    if (!lines || !lines.length || !meta) return null;
+    let del = null;
+    lines.forEach(function (ln) {
+      if (ln.panel === "price" && !meta.showPrice) return;
+      if (ln.panel === "rsi" && !meta.showRsi) return;
+      const ends = lineEnds(ln, meta);
+      const clip = panelClip(ln.panel, meta);
+      const selected = withDelete && selectedId && ln.id === selectedId;
+      x.save();
+      x.beginPath();
+      x.rect(meta.L, clip.T, Math.max(0, meta.Rx - meta.L), Math.max(0, clip.B - clip.T));
+      x.clip();
+      x.strokeStyle = selected ? INK : GREY;
+      x.lineWidth = selected ? (ST.mobile ? 1.6 : 1.85) : (ST.mobile ? 1.25 : 1.45);
+      x.lineCap = "round";
+      x.beginPath();
+      x.moveTo(ends.x0, ends.y0);
+      x.lineTo(ends.x1, ends.y1);
+      x.stroke();
+      x.restore();
+      if (selected) {
+        const pr = ST.mobile ? 4.5 : 5;
+        [0, 1].forEach(function (i) {
+          const px = i ? ends.x1 : ends.x0, py = i ? ends.y1 : ends.y0;
+          if (py < clip.T - 1 || py > clip.B + 1) return;
+          x.beginPath();
+          x.arc(px, py, pr, 0, Math.PI * 2);
+          x.fillStyle = BG; x.fill();
+          x.lineWidth = 1.5; x.strokeStyle = INK; x.stroke();
+        });
+        del = delButtonPos(ends, meta);
+      }
+    });
+    return del;
+  }
+  function drawDeleteBtn(x, del) {
+    if (!del) return;
+    x.save();
+    x.beginPath();
+    if (x.roundRect) x.roundRect(del.x - del.r, del.y - del.r, del.r * 2, del.r * 2, 4);
+    else x.rect(del.x - del.r, del.y - del.r, del.r * 2, del.r * 2);
+    x.fillStyle = "rgba(18,22,28,0.94)";
+    x.strokeStyle = "#3a4450";
+    x.lineWidth = 1;
+    x.fill(); x.stroke();
+    x.strokeStyle = INK;
+    x.lineWidth = 1.4;
+    x.lineCap = "round";
+    const s = del.r * 0.38;
+    x.beginPath();
+    x.moveTo(del.x - s, del.y - s); x.lineTo(del.x + s, del.y + s);
+    x.moveTo(del.x + s, del.y - s); x.lineTo(del.x - s, del.y + s);
+    x.stroke();
+    x.restore();
   }
 
   // Weekly high-low bars, coloured by exact depth and split at 1× and 2×.
@@ -749,8 +1015,10 @@
 
     const isPrice = mode === "price";
     const isMonth = DATA.interval === "monthly";
+    const showPrice = ST.showPrice !== false;
+    const showRsi = !!ST.showRsi;
     const tfLabel = isMonth ? "Monthly" : "Weekly";
-    const title = isPrice ? def.titlePrice : def.titleRel;
+    const title = !showPrice ? (COIN.name + " RSI") : (isPrice ? def.titlePrice : def.titleRel);
     F(600, ST.tt);
     const titleW = x.measureText(title).width;
     F(500, ST.wm);
@@ -843,10 +1111,12 @@
         ticks = ticks.filter(function (v) { return keep[v]; });
       }
     }
-    if (zoomed) {
+    if (zoomed && showPrice) {
       // A zoomed range can be narrower than the round levels: add finer
       // levels, then thin them so labels never crowd.
-      const Tz = ST.T, Bz = ST.B, lt = Math.log10(top), lb = Math.log10(bot);
+      const Tz = ST.plotT != null ? ST.plotT : ST.T;
+      const Bz = ST.plotB != null ? ST.plotB : ST.B;
+      const lt = Math.log10(top), lb = Math.log10(bot);
       const yOf = function (v) { return Tz + ((lt - Math.log10(v)) / (lt - lb)) * (Bz - Tz); };
       const minPx = ST.mobile ? 22 : 34;
       // Densest evenly-patterned set of levels whose labels don't crowd.
@@ -893,17 +1163,21 @@
     const tickLab = isPrice ? usdTick : rTick;
 
     F(400, ST.fs);
-    const labW = Math.max.apply(null,
-      ["$100k", "$2.2T", "$200B", "$0.0001", "16x", "32x"].concat(ticks.map(tickLab)).map(function (q) { return x.measureText(q).width; })
-    );
+    const labSamples = showPrice
+      ? ["$100k", "$2.2T", "$200B", "$0.0001", "16x", "32x"].concat(ticks.map(tickLab))
+      : [];
+    if (showRsi) ["0", "30", "50", "70", "90", "100"].forEach(function (q) { labSamples.push(q); });
+    const labW = Math.max.apply(null, labSamples.map(function (q) { return x.measureText(q).width; }));
     const L = Math.round(Pd + (ST.mobile ? 8 : 12) + labW);
     const Rx = Wd - Pd - Rgt;
-    const T = ST.T, B = ST.B;
+    const T = showPrice ? (ST.plotT != null ? ST.plotT : ST.T) : (ST.rsiT != null ? ST.rsiT : ST.T);
+    const B = showPrice ? (ST.plotB != null ? ST.plotB : ST.B) : (ST.rsiB != null ? ST.rsiB : ST.B);
+    const axisB = ST.axisB != null ? ST.axisB : B;
     const l1 = Math.log10(top), l0 = Math.log10(bot);
     const Yr = function (v) { return T + ((l1 - Math.log10(v)) / (l1 - l0)) * (B - T); };
     const X = function (t) { return L + ((t - tStart) / (tEnd - tStart)) * (Rx - L); };
 
-    ticks.forEach(function (v) {
+    if (showPrice) ticks.forEach(function (v) {
       const y = Math.round(Yr(v));
       const is1 = !isPrice && v === 1;
       const is2 = !isPrice && v === 2;
@@ -922,7 +1196,7 @@
 
     // Subtle dashed 2× reference in the relative view, even if 2
     // was filtered from the tick list (it almost never is).
-    if (!isPrice) {
+    if (showPrice && !isPrice) {
       const y2 = Yr(2);
       if (y2 >= T - 1 && y2 <= B + 1) {
         drawDashed(x, function () {
@@ -937,7 +1211,7 @@
     }
 
     F(400, ST.fs);
-    if (zoomed) drawTimeTicks(x, ST, L, Rx, B, tStart, tEnd, X, F, Tx);
+    if (zoomed) drawTimeTicks(x, ST, L, Rx, axisB, tStart, tEnd, X, F, Tx);
     else {
     const y0 = new Date(tStart).getUTCFullYear();
     const y1 = new Date(tEnd).getUTCFullYear();
@@ -963,7 +1237,7 @@
       }
       const left = xx - tw / 2, right = xx + tw / 2;
       if (left < L || right > Rx || left < lastRight + minGap) continue;
-      Tx(String(yy), xx, B + ST.yr, AX, "center");
+      Tx(String(yy), xx, axisB + ST.yr, AX, "center");
       lastRight = right;
     }
     }
@@ -995,14 +1269,15 @@
         r: cl[i] / sm[i],
         rLo: loA[i] / sm[i],
         rHi: hiA[i] / sm[i],
+        rsi: DATA.rsi ? DATA.rsi[i] : null,
         isPrice: isPrice,
-        yp: Yr(isPrice ? cl[i] : cl[i] / sm[i]),
-        ys: Yr(isPrice ? sm[i] : 1),
-        y2: Yr(isPrice ? 2 * sm[i] : 2),
+        yp: showPrice ? Yr(isPrice ? cl[i] : cl[i] / sm[i]) : null,
+        ys: showPrice ? Yr(isPrice ? sm[i] : 1) : null,
+        y2: showPrice ? Yr(isPrice ? 2 * sm[i] : 2) : null,
       });
     }
 
-    if (isPrice) {
+    if (showPrice && isPrice) {
       let linePts = pts;
       if (DATA.smaWeekly && DATA.smaWeekly.length) {
         linePts = DATA.smaWeekly.map(function (q) {
@@ -1037,7 +1312,7 @@
       if (false) {
         lx = titleEnd + inGap; ly = ST.ty - (ST.mobile ? 2 : 4);
       } else {
-        lx = L; ly = B + ST.yr + (ST.mobile ? 22 : 32) + PRICE_LEGEND_DY;
+        lx = L; ly = axisB + ST.yr + (ST.mobile ? 22 : 32) + PRICE_LEGEND_DY;
         if (ST.share) ly += SHARE_KEY_SHIFT;
       }
       const midY = ly - lgF * 0.33;
@@ -1051,8 +1326,15 @@
         "rgba(138,145,156,0.95)", ST.mobile ? 1.1 : 1.35, ST.mobile ? [3, 3] : [5, 4]);
       Tx(t2, lx2 + segW + segGap, ly, SMA_C);
     }
-    if (ST.style === "line") drawZonedLine(x, pts, ST, L, Rx, T, B);
-    else if (!DATA.missingHL) drawZonedBars(x, pts, ST, L, Rx, T, B, Yr, zoomed);
+    if (showPrice) {
+      if (ST.style === "line") drawZonedLine(x, pts, ST, L, Rx, T, B);
+      else if (!DATA.missingHL) drawZonedBars(x, pts, ST, L, Rx, T, B, Yr, zoomed);
+    }
+
+    if (showRsi && ST.rsiT != null) {
+      drawRsiPanel(x, ST, L, Rx, ST.rsiT, ST.rsiB, F, Tx);
+      drawZonedRsi(x, pts, ST, L, Rx, ST.rsiT, ST.rsiB);
+    }
 
     const last = pts[pts.length - 1];
     const price = DATA.lastPx, smaV = DATA.lastSma, mult = price / smaV;
@@ -1060,6 +1342,18 @@
     const zCol = ZONES[zNow].color;
     last.zone = zNow;
     last.lw = ST.lw;
+
+    const metaNow = {
+      L: L, Rx: Rx, T: T, B: B, axisB: axisB,
+      showPrice: showPrice, showRsi: showRsi,
+      rsiT: ST.rsiT, rsiB: ST.rsiB,
+      top: top, bot: bot, t0: tStart, t1: tEnd,
+    };
+    // Committed drawings go on the chart (and on Share). The selected
+    // delete button is overlay-only, so it never appears on the PNG.
+    if (ST.drawings && ST.drawings.length) {
+      drawCommittedLines(x, ST.drawings, metaNow, ST, null, false);
+    }
 
     x.fillStyle = "#2c333d";
     x.fillRect(Pd, ST.ny, Wd - 2 * Pd, 1);
@@ -1083,8 +1377,11 @@
     F(700, Math.round(ST.mv * 0.62));
     Tx(pctTxt, Pd + 2 * cw + multW + (ST.mobile ? 5 : 10), ST.ny + ST.mvy, zCol);
 
+    const lastRsi = DATA.rsi ? DATA.rsi[DATA.rsi.length - 1] : null;
     return {
-      L: L, Rx: Rx, T: T, B: B, top: top, bot: bot, ticks: ticks,
+      L: L, Rx: Rx, T: T, B: B, axisB: axisB, top: top, bot: bot, ticks: ticks,
+      showPrice: showPrice, showRsi: showRsi, rsiT: ST.rsiT, rsiB: ST.rsiB,
+      title: title, lastRsi: lastRsi,
       t0: tStart, t1: tEnd, dom: dom, zoomed: zoomed, pts: pts,
       style: ST.style === "line" ? "line" : "candle",
       last: last, price: price, sma: smaV, mult: mult, zone: zNow,
@@ -1116,6 +1413,8 @@
     const groupTf = root.querySelector(".toggle-tf");
     const groupStyle = root.querySelector(".toggle-style");
     const groupRange = root.querySelector(".toggle-range");
+    const groupPanels = root.querySelector(".toggle-panels");
+    const groupTools = root.querySelector(".toggle-tools");
     const shareBtn = root.querySelector(".share");
     let MODE = START;
     let TF = START_TF;
@@ -1127,6 +1426,26 @@
     let VIEW = START_RANGE.view || null;
     let META = null, LAYOUT = null;
     let HOVER = null; // crosshair x in layout units, or null
+    let PANELS = { showPrice: START_PANELS.showPrice, showRsi: START_PANELS.showRsi };
+    let TOOL = null; // "trend" | "horiz" | null (select / pan)
+    let SELECTED = null;
+    let PENDING = null; // first point of an in-progress trend line
+    let HANDLE = null; // { id, end: 0|1, panel }
+    let DEL_RECT = null;
+    const DRAW_STORE = loadDrawStore();
+    function storeKey() { return COIN.id + ":" + (MODE === "price" ? "price" : "relative"); }
+    function currentLines() { return (DRAW_STORE[storeKey()] || []).slice(); }
+    function setLines(arr) {
+      DRAW_STORE[storeKey()] = arr;
+      saveDrawStore(DRAW_STORE);
+    }
+    function syncToolCursor() {
+      if (HANDLE) canvas.classList.add("is-dragging");
+      else canvas.classList.remove("is-dragging");
+      if (TOOL) canvas.classList.add("is-drawing");
+      else canvas.classList.remove("is-drawing");
+      canvas.style.touchAction = (TOOL || HANDLE) ? "none" : "";
+    }
 
     function activeData() { return datas[TF] || datas.weekly; }
 
@@ -1150,12 +1469,17 @@
     }
 
     function displayLayout(mode) {
-      if (SHARE) return desktopLayout(mode);
-      const cssW = stage && stage.clientWidth ? stage.clientWidth : (window.innerWidth || SHARE_W);
-      if (cssW < MOBILE_MAX) return mobileLayout(cssW, mode);
-      const layout = desktopLayout(mode);
-      layout.ty -= PRICE_TITLE_DY;
-      return layout;
+      let layout;
+      if (SHARE) layout = desktopLayout(mode);
+      else {
+        const cssW = stage && stage.clientWidth ? stage.clientWidth : (window.innerWidth || SHARE_W);
+        if (cssW < MOBILE_MAX) layout = mobileLayout(cssW, mode);
+        else {
+          layout = desktopLayout(mode);
+          layout.ty -= PRICE_TITLE_DY;
+        }
+      }
+      return applyPanelLayout(layout, PANELS);
     }
 
     function minSpan(DATA) {
@@ -1207,6 +1531,7 @@
       const DATA = activeData();
       layout.view = resolveView(DATA);
       layout.style = STYLE;
+      layout.drawings = currentLines();
       const meta = drawInto(x, mode, layout, DATA, def);
       META = meta; LAYOUT = layout;
       drawOverlay();
@@ -1228,11 +1553,13 @@
       clearTimeout(urlT);
       urlT = setTimeout(function () {
         const P = new URLSearchParams(location.search);
-        ["coin", "view", "mode", "tf", "style", "range", "from", "to"].forEach(function (k) { P.delete(k); });
+        ["coin", "view", "mode", "tf", "style", "range", "from", "to", "panels"].forEach(function (k) { P.delete(k); });
         if (COIN.id !== "btc") P.set("coin", COIN.id);
         if (MODE === "price") P.set("view", "regular");
         if (TF === "monthly") P.set("tf", "monthly");
         if (STYLE === "line") P.set("style", "line");
+        if (PANELS.showPrice && PANELS.showRsi) P.set("panels", "both");
+        else if (!PANELS.showPrice && PANELS.showRsi) P.set("panels", "rsi");
         if (RANGE === "1y" || RANGE === "4y") P.set("range", RANGE);
         else if (RANGE === "custom" && VIEW) {
           const iso = function (t) { return new Date(t).toISOString().slice(0, 10); };
@@ -1267,6 +1594,18 @@
           b.setAttribute("aria-checked", b.getAttribute("data-range") === RANGE ? "true" : "false");
         });
       }
+      if (groupPanels) {
+        groupPanels.querySelectorAll("[data-panel]").forEach(function (b) {
+          const on = b.getAttribute("data-panel") === "rsi" ? PANELS.showRsi : PANELS.showPrice;
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      }
+      if (groupTools) {
+        groupTools.querySelectorAll("[data-tool]").forEach(function (b) {
+          b.setAttribute("aria-checked", b.getAttribute("data-tool") === TOOL ? "true" : "false");
+        });
+      }
+      syncToolCursor();
     }
 
     function setStyle(style, opts) {
@@ -1298,8 +1637,56 @@
       return meta;
     }
 
+    function setPanels(spec, opts) {
+      let next;
+      if (spec === "price") next = { showPrice: true, showRsi: false };
+      else if (spec === "rsi") next = { showPrice: false, showRsi: true };
+      else if (spec === "both") next = { showPrice: true, showRsi: true };
+      else if (spec && typeof spec === "object") {
+        next = { showPrice: !!spec.showPrice, showRsi: !!spec.showRsi };
+      } else return PANELS;
+      if (!next.showPrice && !next.showRsi) return PANELS;
+      PANELS = next;
+      if (SELECTED) {
+        const ln = currentLines().filter(function (q) { return q.id === SELECTED; })[0];
+        if (ln && ((ln.panel === "price" && !PANELS.showPrice) || (ln.panel === "rsi" && !PANELS.showRsi))) {
+          SELECTED = null;
+        }
+      }
+      PENDING = null;
+      syncToggles();
+      const meta = draw(MODE);
+      if (opts && opts.focus && groupPanels) {
+        const el = groupPanels.querySelector("[data-panel]");
+        if (el) el.focus();
+      }
+      return meta;
+    }
+    function togglePanel(name) {
+      const next = { showPrice: PANELS.showPrice, showRsi: PANELS.showRsi };
+      if (name === "rsi") next.showRsi = !next.showRsi;
+      else next.showPrice = !next.showPrice;
+      if (!next.showPrice && !next.showRsi) return; // keep at least one on
+      setPanels(next);
+    }
+    function setTool(tool, opts) {
+      const t = tool === "trend" || tool === "horiz" ? tool : null;
+      TOOL = TOOL === t ? null : t;
+      PENDING = null;
+      syncToggles();
+      drawOverlay();
+      if (opts && opts.focus && groupTools) {
+        const el = groupTools.querySelector('[data-tool="' + (TOOL || "trend") + '"]');
+        if (el) el.focus();
+      }
+      return TOOL;
+    }
+
     function setMode(mode, opts) {
       MODE = mode === "price" ? "price" : "relative";
+      SELECTED = null;
+      PENDING = null;
+      HANDLE = null;
       syncToggles();
       const meta = draw(MODE);
       if (opts && opts.focus) {
@@ -1337,6 +1724,9 @@
       F(500, 13);
       Tx("by @_CryptoSurf", wmX, wmY + SHARE_HANDLE_DY, ST.wmc, "right");
 
+      // Zone key is about the 200W SMA, so it stays off an RSI-only share.
+      if (ST.showPrice === false) return;
+
       const items = [
         { name: "ACCUMULATION", range: "", color: "#0CD7F1" },
         { name: "NEUTRAL", range: "", color: "#e6e8eb" },
@@ -1353,7 +1743,7 @@
       widths.forEach(function (w, i) { total += w.w + (i ? itemGap : 0); });
       const isPrice = mode === "price";
       // Same row as the Price-view SMA legend (share Multiple also uses that band).
-      const y = meta.B + ST.yr + 32 + SHARE_KEY_SHIFT + (isPrice ? PRICE_LEGEND_DY : 0);
+      const y = (meta.axisB != null ? meta.axisB : meta.B) + ST.yr + 32 + SHARE_KEY_SHIFT + (isPrice ? PRICE_LEGEND_DY : 0);
       let cx = (meta.L + meta.Rx) / 2 - total / 2;
       items.forEach(function (it, i) {
         F(700, keySize); Tx(it.name, cx, y, it.color);
@@ -1373,7 +1763,8 @@
       layout.view = resolveView(DATA);
       layout.style = STYLE;
       // Same plot bottom as Price, so the zone key gets a clear row under the years.
-      if (mode !== "price") layout.B = 488;
+      // RSI-only has no zone key: keep the full plot so the panel isn't short.
+      if (mode !== "price" && PANELS.showPrice) layout.B = 488;
       layout.share = true;
       // Line the site name up with the title (cap-height, same header row).
       // Handle stays under the site name. On-page typography is unchanged.
@@ -1384,8 +1775,11 @@
       // metrics row below it) so nothing gets squeezed.
       layout.T += SHARE_PLOT_SHIFT;
       layout.B += SHARE_PLOT_SHIFT;
-      layout.ny += SHARE_PLOT_SHIFT + SHARE_KEY_SHIFT;
-      layout.H += SHARE_PLOT_SHIFT + SHARE_KEY_SHIFT;
+      const keyShift = PANELS.showPrice ? SHARE_KEY_SHIFT : 0;
+      layout.ny += SHARE_PLOT_SHIFT + keyShift;
+      layout.H += SHARE_PLOT_SHIFT + keyShift;
+      applyPanelLayout(layout, PANELS);
+      layout.drawings = currentLines();
       const off = document.createElement("canvas");
       off.width = SHARE_W * SHARE_D;
       off.height = layout.H * SHARE_D;
@@ -1487,6 +1881,46 @@
     }
     bindRadio(groupStyle, "data-style", setStyle, ["candle", "line"]);
     bindRadio(groupRange, "data-range", setRange, ["1y", "4y", "all"]);
+    if (groupPanels) {
+      groupPanels.addEventListener("click", function (e) {
+        const b = e.target.closest("[data-panel]");
+        if (!b) return;
+        togglePanel(b.getAttribute("data-panel"));
+      });
+    }
+    if (groupTools) {
+      groupTools.addEventListener("click", function (e) {
+        const b = e.target.closest("[data-tool]");
+        if (!b) return;
+        setTool(b.getAttribute("data-tool"));
+      });
+      groupTools.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") { setTool(null); return; }
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].indexOf(e.key) < 0) return;
+        e.preventDefault();
+        const vals = ["trend", "horiz"];
+        let i = vals.indexOf(TOOL);
+        if (e.key === "Home") i = 0;
+        else if (e.key === "End") i = vals.length - 1;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowUp") i = (Math.max(i, 0) - 1 + vals.length) % vals.length;
+        else i = (i + 1) % vals.length;
+        TOOL = null;
+        setTool(vals[i], { focus: true });
+      });
+    }
+    document.addEventListener("keydown", function (e) {
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+      if (e.key === "Escape") {
+        if (PENDING) { PENDING = null; drawOverlay(); return; }
+        if (TOOL) { setTool(null); return; }
+        if (SELECTED) { SELECTED = null; drawOverlay(); }
+      } else if ((e.key === "Delete" || e.key === "Backspace") && SELECTED) {
+        e.preventDefault();
+        setLines(currentLines().filter(function (q) { return q.id !== SELECTED; }));
+        SELECTED = null;
+        draw(MODE);
+      }
+    });
 
     // ---- Crosshair overlay (on-page only; Share renders off-screen) ----
     const overlay = document.createElement("canvas");
@@ -1529,70 +1963,110 @@
       const x = overlay.getContext("2d");
       x.setTransform(1, 0, 0, 1, 0, 0);
       x.clearRect(0, 0, overlay.width, overlay.height);
-      if (HOVER == null || !META) { overlay.hidden = true; return; }
-      const q = nearestPt(HOVER);
-      if (!q) { overlay.hidden = true; return; }
+      DEL_RECT = null;
+      const hasSel = !!(SELECTED || PENDING);
+      const q = (HOVER != null && META) ? nearestPt(HOVER) : null;
+      if (!q && !hasSel) { overlay.hidden = true; return; }
       overlay.hidden = false;
       const ST = LAYOUT;
       x.setTransform(ST.dpr, 0, 0, ST.dpr, 0, 0);
-      const L = META.L, Rx = META.Rx, T = META.T, B = META.B;
-      const cx = Math.round(q.cx * ST.dpr) / ST.dpr + 0.5 / ST.dpr;
-      x.save();
-      x.strokeStyle = "rgba(201,206,214,0.55)";
-      x.lineWidth = 1;
-      x.setLineDash(ST.mobile ? [3, 3] : [4, 4]);
-      x.beginPath(); x.moveTo(cx, T); x.lineTo(cx, B); x.stroke();
-      x.restore();
-      // Small ring on the close.
-      if (q.yp >= T && q.yp <= B) {
+      if (q && !HANDLE && !TOOL) {
+        const L = META.L, Rx = META.Rx;
+        const top = plotTop(), bot = plotBot();
+        const cx = Math.round(q.cx * ST.dpr) / ST.dpr + 0.5 / ST.dpr;
+        x.save();
+        x.strokeStyle = "rgba(201,206,214,0.55)";
+        x.lineWidth = 1;
+        x.setLineDash(ST.mobile ? [3, 3] : [4, 4]);
+        x.beginPath(); x.moveTo(cx, top); x.lineTo(cx, bot); x.stroke();
+        x.restore();
+        // Small ring on the close.
+        if (META.showPrice && q.yp != null && q.yp >= META.T && q.yp <= META.B) {
+          x.beginPath();
+          x.arc(q.cx, q.yp, ST.mobile ? 3 : 4, 0, Math.PI * 2);
+          x.fillStyle = BG; x.fill();
+          x.lineWidth = ST.mobile ? 1.5 : 2;
+          x.strokeStyle = INK; x.stroke();
+        }
+        if (META.showRsi && q.rsi != null && isFinite(q.rsi)) {
+          const ry = rsiYAt(q.rsi, META.rsiT, META.rsiB);
+          if (ry >= META.rsiT && ry <= META.rsiB) {
+            x.beginPath();
+            x.arc(q.cx, ry, ST.mobile ? 3 : 4, 0, Math.PI * 2);
+            x.fillStyle = BG; x.fill();
+            x.lineWidth = ST.mobile ? 1.5 : 2;
+            x.strokeStyle = "#e6e8eb"; x.stroke();
+          }
+        }
+        // Readout box.
+        const fsz = ST.mobile ? 11 : 14, lh = ST.mobile ? 15 : 20, pad = ST.mobile ? 7 : 10;
+        const rows = [
+          [COIN.unit || "Price", fv(q.p), INK],
+          [def.smaLabel, fv(q.s), INK],
+          ["Multiple", q.r.toFixed(2) + "x", zoneColor(q.r)],
+        ];
+        if (META.showRsi && q.rsi != null && isFinite(q.rsi)) {
+          rows.push(["RSI", q.rsi.toFixed(1), "#e6e8eb"]);
+        }
+        const title = fmtBarDate(q.t);
+        x.font = "600 " + fsz + "px " + FONT;
+        let lw = x.measureText(title).width, vw = 0, kw = 0;
+        rows.forEach(function (rw) {
+          x.font = "400 " + fsz + "px " + FONT; kw = Math.max(kw, x.measureText(rw[0]).width);
+          x.font = "700 " + fsz + "px " + FONT; vw = Math.max(vw, x.measureText(rw[1]).width);
+        });
+        const gap = ST.mobile ? 10 : 16;
+        const bw = Math.ceil(Math.max(lw, kw + gap + vw) + pad * 2);
+        const bh = Math.ceil(pad * 2 + lh * (rows.length + 1) - (lh - fsz) + 2);
+        const off = ST.mobile ? 10 : 14;
+        let bx = q.cx + off;
+        if (bx + bw > Rx) bx = q.cx - off - bw;
+        if (bx < L) bx = Math.min(Rx - bw, L + 2);
+        const by = top + (ST.mobile ? 4 : 8);
+        x.fillStyle = "rgba(18,22,28,0.94)";
+        x.strokeStyle = "#2c333d";
+        x.lineWidth = 1;
         x.beginPath();
-        x.arc(q.cx, q.yp, ST.mobile ? 3 : 4, 0, Math.PI * 2);
-        x.fillStyle = BG; x.fill();
-        x.lineWidth = ST.mobile ? 1.5 : 2;
-        x.strokeStyle = INK; x.stroke();
+        if (x.roundRect) x.roundRect(bx + 0.5, by + 0.5, bw, bh, 6); else x.rect(bx + 0.5, by + 0.5, bw, bh);
+        x.fill(); x.stroke();
+        x.textBaseline = "alphabetic";
+        let ty = by + pad + fsz;
+        x.textAlign = "left";
+        x.font = "600 " + fsz + "px " + FONT; x.fillStyle = INK; x.fillText(title, bx + pad, ty);
+        rows.forEach(function (rw) {
+          ty += lh;
+          x.textAlign = "left"; x.font = "400 " + fsz + "px " + FONT; x.fillStyle = "#a7adb6";
+          x.fillText(rw[0], bx + pad, ty);
+          x.textAlign = "right"; x.font = "700 " + fsz + "px " + FONT; x.fillStyle = rw[2];
+          x.fillText(rw[1], bx + bw - pad, ty);
+        });
       }
-      // Readout box.
-      const fsz = ST.mobile ? 11 : 14, lh = ST.mobile ? 15 : 20, pad = ST.mobile ? 7 : 10;
-      const rows = [
-        [COIN.unit || "Price", fv(q.p), INK],
-        [def.smaLabel, fv(q.s), INK],
-        ["Multiple", q.r.toFixed(2) + "x", zoneColor(q.r)],
-      ];
-      const title = fmtBarDate(q.t);
-      x.font = "600 " + fsz + "px " + FONT;
-      let lw = x.measureText(title).width, vw = 0, kw = 0;
-      rows.forEach(function (rw) {
-        x.font = "400 " + fsz + "px " + FONT; kw = Math.max(kw, x.measureText(rw[0]).width);
-        x.font = "700 " + fsz + "px " + FONT; vw = Math.max(vw, x.measureText(rw[1]).width);
-      });
-      const gap = ST.mobile ? 10 : 16;
-      const bw = Math.ceil(Math.max(lw, kw + gap + vw) + pad * 2);
-      const bh = Math.ceil(pad * 2 + lh * (rows.length + 1) - (lh - fsz) + 2);
-      const off = ST.mobile ? 10 : 14;
-      let bx = q.cx + off;
-      if (bx + bw > Rx) bx = q.cx - off - bw;
-      if (bx < L) bx = Math.min(Rx - bw, L + 2);
-      const by = T + (ST.mobile ? 4 : 8);
-      x.fillStyle = "rgba(18,22,28,0.94)";
-      x.strokeStyle = "#2c333d";
-      x.lineWidth = 1;
-      x.beginPath();
-      if (x.roundRect) x.roundRect(bx + 0.5, by + 0.5, bw, bh, 6); else x.rect(bx + 0.5, by + 0.5, bw, bh);
-      x.fill(); x.stroke();
-      x.textBaseline = "alphabetic";
-      let ty = by + pad + fsz;
-      x.textAlign = "left";
-      x.font = "600 " + fsz + "px " + FONT; x.fillStyle = INK; x.fillText(title, bx + pad, ty);
-      rows.forEach(function (rw) {
-        ty += lh;
-        x.textAlign = "left"; x.font = "400 " + fsz + "px " + FONT; x.fillStyle = "#a7adb6";
-        x.fillText(rw[0], bx + pad, ty);
-        x.textAlign = "right"; x.font = "700 " + fsz + "px " + FONT; x.fillStyle = rw[2];
-        x.fillText(rw[1], bx + bw - pad, ty);
-      });
+      if (PENDING && META && HOVER != null) {
+        const x1 = Math.max(META.L, Math.min(META.Rx, HOVER));
+        const y1 = PENDING.hy != null ? PENDING.hy : valueToY(PENDING.v, PENDING.panel, META);
+        const x0 = timeToX(PENDING.t, META), y0 = valueToY(PENDING.v, PENDING.panel, META);
+        x.save();
+        const clip = panelClip(PENDING.panel, META);
+        x.beginPath();
+        x.rect(META.L, clip.T, Math.max(0, META.Rx - META.L), Math.max(0, clip.B - clip.T));
+        x.clip();
+        x.strokeStyle = GREY;
+        x.lineWidth = ST.mobile ? 1.25 : 1.45;
+        x.setLineDash([5, 4]);
+        x.beginPath(); x.moveTo(x0, y0); x.lineTo(x1, y1); x.stroke();
+        x.setLineDash([]);
+        x.beginPath(); x.arc(x0, y0, 4, 0, Math.PI * 2);
+        x.fillStyle = BG; x.fill(); x.strokeStyle = INK; x.lineWidth = 1.5; x.stroke();
+        x.restore();
+      }
+      if (SELECTED && META) {
+        const sel = currentLines().filter(function (q) { return q.id === SELECTED; });
+        DEL_RECT = drawCommittedLines(x, sel, META, ST, SELECTED, true);
+        drawDeleteBtn(x, DEL_RECT);
+      }
     }
 
-    // ---- Zoom and pan ----
+    // ---- Zoom, pan, and drawing tools ----
     let raf = 0;
     function redrawSoon() {
       if (raf) return;
@@ -1628,8 +2102,51 @@
       const k = span / (v.t1 - v.t0);
       setCustom({ t0: ta - (ta - v.t0) * k, t1: ta - (ta - v.t0) * k + span });
     }
+    function plotTop() {
+      if (!META) return 0;
+      return META.showPrice ? META.T : META.rsiT;
+    }
+    function plotBot() {
+      if (!META) return 0;
+      return META.axisB != null ? META.axisB : (META.showRsi ? META.rsiB : META.B);
+    }
     function inPlot(u) {
-      return META && u.x >= META.L && u.x <= META.Rx && u.y >= META.T - 4 && u.y <= META.B + 4;
+      return META && u.x >= META.L && u.x <= META.Rx && u.y >= plotTop() - 4 && u.y <= plotBot() + 4;
+    }
+    function panelAt(y) {
+      if (!META) return null;
+      if (META.showPrice && y >= META.T - 6 && y <= META.B + 6) return "price";
+      if (META.showRsi && y >= META.rsiT - 6 && y <= META.rsiB + 6) return "rsi";
+      return null;
+    }
+    function hitDelete(u) {
+      if (!DEL_RECT) return false;
+      return Math.abs(u.x - DEL_RECT.x) <= DEL_RECT.r + 3 && Math.abs(u.y - DEL_RECT.y) <= DEL_RECT.r + 3;
+    }
+    function hitHandle(u) {
+      if (!SELECTED || !META) return null;
+      const ln = currentLines().filter(function (q) { return q.id === SELECTED; })[0];
+      if (!ln) return null;
+      if (ln.panel === "price" && !META.showPrice) return null;
+      if (ln.panel === "rsi" && !META.showRsi) return null;
+      const ends = lineEnds(ln, META);
+      const rad = (LAYOUT && LAYOUT.mobile) ? 14 : 10;
+      if (Math.hypot(u.x - ends.x0, u.y - ends.y0) <= rad) return { id: ln.id, end: 0, panel: ln.panel };
+      if (Math.hypot(u.x - ends.x1, u.y - ends.y1) <= rad) return { id: ln.id, end: 1, panel: ln.panel };
+      return null;
+    }
+    function hitLine(u) {
+      if (!META) return null;
+      const thresh = (LAYOUT && LAYOUT.mobile) ? 14 : 8;
+      let best = null, bd = thresh;
+      currentLines().forEach(function (ln) {
+        if (ln.panel === "price" && !META.showPrice) return;
+        if (ln.panel === "rsi" && !META.showRsi) return;
+        const ends = lineEnds(ln, META);
+        const d = distToSeg(u.x, u.y, ends.x0, ends.y0, ends.x1, ends.y1);
+        if (d <= bd) { bd = d; best = ln; }
+      });
+      return best;
     }
 
     canvas.addEventListener("wheel", function (e) {
@@ -1645,14 +2162,76 @@
     }, { passive: false });
 
     const ptrs = new Map();
-    let drag = null, pinch = null;
+    let drag = null, pinch = null, drawAct = null;
     canvas.addEventListener("pointerdown", function (e) {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       const u = toUnits(e.clientX, e.clientY);
       ptrs.set(e.pointerId, { x: u.x, y: u.y });
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (hitDelete(u)) {
+        setLines(currentLines().filter(function (q) { return q.id !== SELECTED; }));
+        SELECTED = null;
+        drawAct = "delete";
+        e.preventDefault();
+        draw(MODE);
+        return;
+      }
+      const h = hitHandle(u);
+      if (h) {
+        HANDLE = h;
+        drawAct = "handle";
+        HOVER = null;
+        syncToolCursor();
+        e.preventDefault();
+        return;
+      }
+      const pan = panelAt(u.y);
+      if (TOOL === "horiz" && pan && META && u.x >= META.L && u.x <= META.Rx) {
+        const v = yToValue(u.y, pan, META);
+        const ln = { id: newDrawId(), kind: "horiz", panel: pan, t0: META.t0, t1: META.t1, v0: v, v1: v };
+        const arr = currentLines(); arr.push(ln); setLines(arr);
+        SELECTED = ln.id;
+        PENDING = null;
+        drawAct = "place";
+        e.preventDefault();
+        draw(MODE);
+        return;
+      }
+      if (TOOL === "trend" && pan && META && u.x >= META.L && u.x <= META.Rx) {
+        const t = xToTime(u.x, META), v = yToValue(u.y, pan, META);
+        if (!PENDING || PENDING.panel !== pan) {
+          PENDING = { panel: pan, t: t, v: v };
+          drawAct = "place";
+          e.preventDefault();
+          drawOverlay();
+          return;
+        }
+        if (Math.hypot(timeToX(PENDING.t, META) - u.x, valueToY(PENDING.v, pan, META) - u.y) < 4) {
+          drawAct = "place";
+          e.preventDefault();
+          return;
+        }
+        const ln = { id: newDrawId(), kind: "trend", panel: pan, t0: PENDING.t, v0: PENDING.v, t1: t, v1: v };
+        const arr = currentLines(); arr.push(ln); setLines(arr);
+        SELECTED = ln.id;
+        PENDING = null;
+        drawAct = "place";
+        e.preventDefault();
+        draw(MODE);
+        return;
+      }
+      const hit = hitLine(u);
+      if (hit) {
+        SELECTED = hit.id;
+        drawAct = "select";
+        HOVER = null;
+        e.preventDefault();
+        drawOverlay();
+        return;
+      }
+      if (SELECTED) { SELECTED = null; drawOverlay(); }
       if (e.pointerType === "mouse") {
-        if (!inPlot(u)) return;
+        if (!inPlot(u) || TOOL) return;
         drag = { x: u.x, v: curView(), moved: false };
         canvas.classList.add("is-dragging");
         e.preventDefault();
@@ -1673,6 +2252,32 @@
     canvas.addEventListener("pointermove", function (e) {
       const u = toUnits(e.clientX, e.clientY);
       if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: u.x, y: u.y });
+      if (HANDLE && META) {
+        const lines = currentLines();
+        let ln = null;
+        for (let i = 0; i < lines.length; i++) if (lines[i].id === HANDLE.id) ln = lines[i];
+        if (ln) {
+          const clip = panelClip(ln.panel, META);
+          const y = Math.max(clip.T, Math.min(clip.B, u.y));
+          const v = yToValue(y, ln.panel, META);
+          if (ln.kind === "horiz") { ln.v0 = v; ln.v1 = v; }
+          else {
+            const px = Math.max(META.L, Math.min(META.Rx, u.x));
+            const t = xToTime(px, META);
+            if (HANDLE.end === 0) { ln.t0 = t; ln.v0 = v; }
+            else { ln.t1 = t; ln.v1 = v; }
+          }
+          DRAW_STORE[storeKey()] = lines;
+          redrawSoon();
+        }
+        return;
+      }
+      if (PENDING) {
+        PENDING.hy = u.y;
+        HOVER = u.x;
+        drawOverlay();
+        return;
+      }
       if (e.pointerType === "mouse") {
         if (drag) {
           const dx = u.x - drag.x;
@@ -1707,6 +2312,13 @@
     function endPtr(e) {
       ptrs.delete(e.pointerId);
       if (ptrs.size < 2) pinch = null;
+      if (HANDLE) {
+        saveDrawStore(DRAW_STORE);
+        HANDLE = null;
+        syncToolCursor();
+        draw(MODE);
+      }
+      drawAct = null;
       if (e.pointerType === "mouse") {
         drag = null;
         canvas.classList.remove("is-dragging");
@@ -1718,9 +2330,9 @@
     canvas.addEventListener("pointerup", endPtr);
     canvas.addEventListener("pointercancel", endPtr);
     canvas.addEventListener("pointerleave", function (e) {
-      if (e.pointerType === "mouse" && !drag) { HOVER = null; drawOverlay(); }
+      if (e.pointerType === "mouse" && !drag && !HANDLE) { HOVER = null; drawOverlay(); }
     });
-    canvas.addEventListener("dblclick", function () { setRange("all"); });
+    canvas.addEventListener("dblclick", function () { if (!TOOL && !PENDING) setRange("all"); });
     // Tap anywhere else hides a touch crosshair.
     document.addEventListener("pointerdown", function (e) {
       if (HOVER != null && e.target !== canvas) { HOVER = null; drawOverlay(); }
@@ -1756,6 +2368,15 @@
       getRange: function () { return { range: RANGE, view: resolveView(activeData()) }; },
       getMeta: function () { return META; },
       setHover: function (ux) { HOVER = ux; drawOverlay(); return nearestPt(ux); },
+      setPanels: setPanels,
+      getPanels: function () { return { showPrice: PANELS.showPrice, showRsi: PANELS.showRsi }; },
+      setTool: setTool,
+      getTool: function () { return TOOL; },
+      getDrawings: function () { return currentLines(); },
+      setDrawings: function (arr) { setLines(arr || []); SELECTED = null; PENDING = null; draw(MODE); },
+      selectDrawing: function (id) { SELECTED = id || null; drawOverlay(); return SELECTED; },
+      getSelected: function () { return SELECTED; },
+      getDelRect: function () { return DEL_RECT; },
       draw: draw,
       onResize: onResize,
       exportPng: function (mode, tf) { return renderShareCanvas(mode || MODE, tf || TF).toDataURL("image/png"); },

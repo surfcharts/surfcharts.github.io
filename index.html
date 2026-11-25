@@ -91,14 +91,26 @@
         <button type="button" class="share">Share PNG</button>
       </div>
       <div class="chart-tools">
-        <div class="toggle toggle-sm toggle-style" role="radiogroup" aria-label="Chart style">
-          <button type="button" role="radio" aria-checked="true" data-style="candle">Candle</button>
-          <button type="button" role="radio" aria-checked="false" data-style="line">Line</button>
+        <div class="chart-tools-left">
+          <div class="toggle toggle-sm toggle-style" role="radiogroup" aria-label="Chart style">
+            <button type="button" role="radio" aria-checked="true" data-style="candle">Candle</button>
+            <button type="button" role="radio" aria-checked="false" data-style="line">Line</button>
+          </div>
+          <div class="toggle toggle-sm toggle-panels" role="group" aria-label="Visible panels">
+            <button type="button" aria-pressed="true" data-panel="price">Price</button>
+            <button type="button" aria-pressed="false" data-panel="rsi">RSI</button>
+          </div>
         </div>
-        <div class="toggle toggle-sm toggle-range" role="radiogroup" aria-label="Visible range">
-          <button type="button" role="radio" aria-checked="false" data-range="1y">1Y</button>
-          <button type="button" role="radio" aria-checked="false" data-range="4y">4Y</button>
-          <button type="button" role="radio" aria-checked="true" data-range="all">All</button>
+        <div class="chart-tools-right">
+          <div class="toggle toggle-sm toggle-tools" role="radiogroup" aria-label="Drawing tools">
+            <button type="button" role="radio" aria-checked="false" data-tool="trend">Trend</button>
+            <button type="button" role="radio" aria-checked="false" data-tool="horiz">Horiz</button>
+          </div>
+          <div class="toggle toggle-sm toggle-range" role="radiogroup" aria-label="Visible range">
+            <button type="button" role="radio" aria-checked="false" data-range="1y">1Y</button>
+            <button type="button" role="radio" aria-checked="false" data-range="4y">4Y</button>
+            <button type="button" role="radio" aria-checked="true" data-range="all">All</button>
+          </div>
         </div>
       </div>
       <div class="stage">
