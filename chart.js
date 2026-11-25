@@ -625,14 +625,20 @@
       const priceH = Math.max(1, layout.B - layout.T);
       const gap = layout.mobile ? RSI_GAP_MOBILE : RSI_GAP_DESKTOP;
       // 0-100 band is ~30% of the price plot; padding is added on top of that
-      // so peaks don't sit on the panel edge.
+      // so peaks don't sit on the panel edge. The leftover space that used
+      // to sit between the 0-edge and the years is folded into the band,
+      // so the 0-edge has the same year-label gap as the price plot does
+      // when RSI is off.
       const pad = layout.mobile ? 8 : 14;
-      const inner = Math.max(layout.mobile ? 84 : 124, Math.round(priceH * 0.30));
+      const inner = Math.max(layout.mobile ? 84 : 124, Math.round(priceH * 0.30)) + pad;
       const rh = inner + 2 * pad;
       layout.rsiT = layout.B + gap;
       layout.rsiB = layout.rsiT + rh;
-      const delta = layout.rsiB - layout.B;
-      layout.axisB = layout.rsiB;
+      // Year labels are anchored to the 0-edge, not the clip edge, so the
+      // bottom padding can overlap that gap without clipping the line.
+      const zero = layout.rsiB - rsiPad(layout.rsiT, layout.rsiB);
+      layout.axisB = zero;
+      const delta = layout.axisB - layout.B;
       layout.ny += delta;
       layout.H += delta;
     }
@@ -643,10 +649,142 @@
     const h = Math.max(1, rB - rT);
     return Math.max(8, Math.min(18, Math.round(h * 0.09)));
   }
-  function rsiYAt(v, rT, rB) {
+  function rsiYAt(v, rT, rB, lo, hi) {
+    if (lo == null) lo = 0;
+    if (hi == null) hi = 100;
     const pad = rsiPad(rT, rB);
     const top = rT + pad, bot = rB - pad;
-    return top + ((100 - v) / 100) * (bot - top);
+    return top + ((hi - v) / (hi - lo)) * (bot - top);
+  }
+  function rsiAtY(py, rT, rB, lo, hi) {
+    if (lo == null) lo = 0;
+    if (hi == null) hi = 100;
+    const pad = rsiPad(rT, rB);
+    const top = rT + pad, bot = rB - pad;
+    if (!(bot > top)) return (lo + hi) / 2;
+    return hi - (py - top) / (bot - top) * (hi - lo);
+  }
+  // Default RSI scale is 20–100, so the visible bottom (the 20-edge)
+  // sits as close to the years as the price plot does when RSI is off.
+  // If a visible reading drops below 20 (ZEC in 2017), the scale opens
+  // to 0–100 so the line is not clipped.
+  function rsiFloor(pts) {
+    let mn = Infinity;
+    (pts || []).forEach(function (q) {
+      if (q.rsi != null && isFinite(q.rsi) && q.rsi < mn) mn = q.rsi;
+    });
+    return mn < 20 ? 0 : 20;
+  }
+
+  // Trend lines are stored in data coordinates (time + value) so they
+  // survive refresh, timeframe, range and live-price redraws. v2 drops
+  // leftover horizontals from the earlier tools.
+  const DRAW_LS_KEY = "surfcharts-drawings-v2";
+  function loadDrawStore() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(DRAW_LS_KEY) || "{}");
+      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    } catch (e) { return {}; }
+  }
+  function saveDrawStore(store) {
+    try { localStorage.setItem(DRAW_LS_KEY, JSON.stringify(store)); } catch (e) { /* quota / private */ }
+  }
+  function newDrawId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function isTrendLine(ln) {
+    return !!(ln && ln.kind === "trend" && (ln.panel === "price" || ln.panel === "rsi") &&
+      isFinite(ln.t0) && isFinite(ln.t1) && isFinite(ln.v0) && isFinite(ln.v1));
+  }
+  function timeToX(t, meta) {
+    return meta.L + ((t - meta.t0) / (meta.t1 - meta.t0)) * (meta.Rx - meta.L);
+  }
+  function xToTime(px, meta) {
+    return meta.t0 + ((px - meta.L) / (meta.Rx - meta.L)) * (meta.t1 - meta.t0);
+  }
+  function valueToY(v, panel, meta) {
+    if (panel === "rsi") return rsiYAt(v, meta.rsiT, meta.rsiB, meta.rsiLo, meta.rsiHi);
+    const T = meta.T, B = meta.B;
+    const l1 = Math.log10(meta.top), l0 = Math.log10(meta.bot);
+    return T + ((l1 - Math.log10(Math.max(v, 1e-12))) / (l1 - l0)) * (B - T);
+  }
+  function yToValue(py, panel, meta) {
+    if (panel === "rsi") return Math.max(0, Math.min(100, rsiAtY(py, meta.rsiT, meta.rsiB, meta.rsiLo, meta.rsiHi)));
+    const T = meta.T, B = meta.B;
+    const l1 = Math.log10(meta.top), l0 = Math.log10(meta.bot);
+    const frac = (py - T) / (B - T);
+    return Math.pow(10, l1 - frac * (l1 - l0));
+  }
+  function lineEnds(ln, meta) {
+    return {
+      x0: timeToX(ln.t0, meta), y0: valueToY(ln.v0, ln.panel, meta),
+      x1: timeToX(ln.t1, meta), y1: valueToY(ln.v1, ln.panel, meta),
+    };
+  }
+  function panelClip(panel, meta) {
+    if (panel === "rsi") return { T: meta.rsiT, B: meta.rsiB };
+    return { T: meta.T, B: meta.B };
+  }
+  function distToSeg(px, py, x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((px - x0) * dx + (py - y0) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+  }
+  function delButtonPos(ends, meta, ST) {
+    const mx = (ends.x0 + ends.x1) / 2;
+    const my = (ends.y0 + ends.y1) / 2;
+    const r = (ST && ST.mobile) ? 14 : 11;
+    let x = Math.max(meta.L + r + 2, Math.min(meta.Rx - r - 2, mx));
+    let y = my - (r + 10);
+    const top = meta.showRsi ? Math.min(meta.T, meta.rsiT) : meta.T;
+    const bot = meta.showRsi ? Math.max(meta.B, meta.rsiB) : meta.B;
+    if (y < top + r + 2) y = my + (r + 10);
+    if (y > bot - r - 2) y = Math.min(bot - r - 2, Math.max(top + r + 2, my));
+    return { x: x, y: y, r: r };
+  }
+  function drawCommittedLines(x, lines, meta, ST) {
+    if (!lines || !lines.length || !meta) return;
+    lines.forEach(function (ln) {
+      if (!isTrendLine(ln)) return;
+      if (ln.panel === "price" && !meta.showPrice) return;
+      if (ln.panel === "rsi" && !meta.showRsi) return;
+      const ends = lineEnds(ln, meta);
+      const clip = panelClip(ln.panel, meta);
+      x.save();
+      x.beginPath();
+      x.rect(meta.L, clip.T, Math.max(0, meta.Rx - meta.L), Math.max(0, clip.B - clip.T));
+      x.clip();
+      x.strokeStyle = "#d4d8de";
+      x.lineWidth = ST.mobile ? 1.7 : 2;
+      x.lineCap = "round";
+      x.beginPath();
+      x.moveTo(ends.x0, ends.y0);
+      x.lineTo(ends.x1, ends.y1);
+      x.stroke();
+      x.restore();
+    });
+  }
+  function drawDeleteBtn(x, del) {
+    if (!del) return;
+    x.save();
+    x.beginPath();
+    if (x.roundRect) x.roundRect(del.x - del.r, del.y - del.r, del.r * 2, del.r * 2, 4);
+    else x.rect(del.x - del.r, del.y - del.r, del.r * 2, del.r * 2);
+    x.fillStyle = "rgba(18,22,28,0.94)";
+    x.strokeStyle = "#3a4450";
+    x.lineWidth = 1;
+    x.fill(); x.stroke();
+    x.strokeStyle = INK;
+    x.lineWidth = 1.5;
+    x.lineCap = "round";
+    const s = del.r * 0.38;
+    x.beginPath();
+    x.moveTo(del.x - s, del.y - s); x.lineTo(del.x + s, del.y + s);
+    x.moveTo(del.x + s, del.y - s); x.lineTo(del.x - s, del.y + s);
+    x.stroke();
+    x.restore();
   }
   function drawZonedRsi(x, pts, ST, L, Rx, rT, rB) {
     const usable = pts.filter(function (q) { return q.rsi != null && isFinite(q.rsi); });
@@ -662,7 +800,7 @@
     x.strokeStyle = "#e6e8eb";
     x.beginPath();
     usable.forEach(function (q, i) {
-      const y = rsiYAt(q.rsi, rT, rB);
+      const y = rsiYAt(q.rsi, rT, rB, ST.rsiLo, ST.rsiHi);
       if (i) x.lineTo(q.cx, y); else x.moveTo(q.cx, y);
     });
     x.stroke();
@@ -670,30 +808,25 @@
   }
 
   function drawRsiPanel(x, ST, L, Rx, rT, rB, F, Tx) {
-    // Clear gutter + rule between the price plot and RSI.
-    if (ST.showPrice && ST.plotB != null && rT > ST.plotB + 4) {
-      const mid = Math.round((ST.plotB + rT) / 2);
-      x.fillStyle = "#2c333d";
-      x.fillRect(L, mid, Rx - L, 1);
-    }
     // Guide levels stay 30 / 50 / 70 / 90 on every timeframe.
-    const refs = [30, 50, 70, 90];
+    const lo = ST.rsiLo != null ? ST.rsiLo : 0;
+    const hi = ST.rsiHi != null ? ST.rsiHi : 100;
+    const refs = [30, 50, 70, 90].filter(function (v) { return v >= lo && v <= hi; });
     refs.forEach(function (v) {
-      const y = Math.round(rsiYAt(v, rT, rB));
+      const y = Math.round(rsiYAt(v, rT, rB, lo, hi));
       x.fillStyle = v === 50 ? "#3a4350" : "#323a45";
       x.fillRect(L, y, Rx - L, 1);
       F(400, ST.fs);
       Tx(String(v), L - 6, y + ST.fs * 0.35, v === 50 ? GREY : AX, "right");
     });
-    // Small "RSI 14" tag at the top-right, away from the early spikes.
+    // Small "RSI 14" tag in the top-left, in the same grey as the guides,
+    // tucked into the top padding so it stays off the 90 label and the line.
     const tag = "RSI 14";
-    F(600, ST.mobile ? 10 : 12);
-    const tw = x.measureText(tag).width;
-    const tx = Rx - tw - (ST.mobile ? 6 : 8);
-    const ty = rT + (ST.mobile ? 13 : 16);
-    x.fillStyle = "rgba(18,22,28,0.72)";
-    x.fillRect(tx - 3, ty - (ST.mobile ? 10 : 12), tw + 6, ST.mobile ? 13 : 16);
-    Tx(tag, tx, ty, SMA_C, "left");
+    const tagFs = ST.mobile ? 9 : 11;
+    F(400, tagFs);
+    const tx = L + (ST.mobile ? 5 : 7);
+    const ty = rT + tagFs + 2;
+    Tx(tag, tx, ty, AX, "left");
   }
 
   // Weekly high-low bars, coloured by exact depth and split at 1× and 2×.
@@ -1196,9 +1329,25 @@
       else if (!DATA.missingHL) drawZonedBars(x, pts, ST, L, Rx, T, B, Yr, zoomed);
     }
 
+    const rsiLo = showRsi ? rsiFloor(pts) : 20;
+    const rsiHi = 100;
+    ST.rsiLo = rsiLo;
+    ST.rsiHi = rsiHi;
     if (showRsi && ST.rsiT != null) {
       drawRsiPanel(x, ST, L, Rx, ST.rsiT, ST.rsiB, F, Tx);
       drawZonedRsi(x, pts, ST, L, Rx, ST.rsiT, ST.rsiB);
+    }
+
+    // Committed lines live on the chart canvas (and on Share). The
+    // selected ✕ is overlay-only, so it never appears on the PNG.
+    if (ST.drawings && ST.drawings.length) {
+      drawCommittedLines(x, ST.drawings, {
+        L: L, Rx: Rx, T: T, B: B, axisB: axisB,
+        showPrice: showPrice, showRsi: showRsi,
+        rsiT: ST.rsiT, rsiB: ST.rsiB,
+        rsiLo: rsiLo, rsiHi: rsiHi,
+        top: top, bot: bot, t0: tStart, t1: tEnd,
+      }, ST);
     }
 
     const last = pts[pts.length - 1];
@@ -1234,6 +1383,7 @@
     return {
       L: L, Rx: Rx, T: T, B: B, axisB: axisB, top: top, bot: bot, ticks: ticks,
       showPrice: showPrice, showRsi: showRsi, rsiT: ST.rsiT, rsiB: ST.rsiB,
+      rsiLo: rsiLo, rsiHi: rsiHi,
       title: title, lastRsi: lastRsi,
       t0: tStart, t1: tEnd, dom: dom, zoomed: zoomed, pts: pts,
       style: ST.style === "line" ? "line" : "candle",
@@ -1267,6 +1417,7 @@
     const groupStyle = root.querySelector(".toggle-style");
     const groupRange = root.querySelector(".toggle-range");
     const groupRsi = root.querySelector(".toggle-rsi");
+    const groupLine = root.querySelector(".toggle-line");
     const shareBtn = root.querySelector(".share");
     let MODE = START;
     let TF = START_TF;
@@ -1279,6 +1430,25 @@
     let META = null, LAYOUT = null;
     let HOVER = null; // crosshair x in layout units, or null
     let PANELS = { showPrice: START_PANELS.showPrice, showRsi: START_PANELS.showRsi };
+    let TOOL = false; // Line tool armed
+    let SELECTED = null;
+    let PENDING = null; // first point of an in-progress line
+    let DEL_RECT = null;
+    const DRAW_STORE = loadDrawStore();
+    function storeKey() { return COIN.id + ":" + (MODE === "price" ? "price" : "relative"); }
+    function currentLines() {
+      return (DRAW_STORE[storeKey()] || []).filter(isTrendLine);
+    }
+    function setLines(arr) {
+      DRAW_STORE[storeKey()] = (arr || []).filter(isTrendLine);
+      saveDrawStore(DRAW_STORE);
+    }
+    function syncToolCursor() {
+      if (TOOL) canvas.classList.add("is-drawing");
+      else canvas.classList.remove("is-drawing");
+      // Spell pan-y out so we never fall back to touch-action: auto.
+      canvas.style.touchAction = (TOOL || PENDING || SELECTED) ? "none" : "pan-y";
+    }
 
     function activeData() { return datas[TF] || datas.weekly; }
 
@@ -1364,6 +1534,7 @@
       const DATA = activeData();
       layout.view = resolveView(DATA);
       layout.style = STYLE;
+      layout.drawings = currentLines();
       const meta = drawInto(x, mode, layout, DATA, def);
       META = meta; LAYOUT = layout;
       drawOverlay();
@@ -1430,6 +1601,11 @@
           b.setAttribute("aria-pressed", PANELS.showRsi ? "true" : "false");
         });
       }
+      if (groupLine) {
+        groupLine.querySelectorAll("button").forEach(function (b) {
+          b.setAttribute("aria-pressed", TOOL ? "true" : "false");
+        });
+      }
     }
 
     function setStyle(style, opts) {
@@ -1463,6 +1639,14 @@
 
     function setRsi(on, opts) {
       PANELS = { showPrice: true, showRsi: !!on };
+      if (!PANELS.showRsi) {
+        if (PENDING && PENDING.panel === "rsi") PENDING = null;
+        if (SELECTED) {
+          const ln = currentLines().filter(function (q) { return q.id === SELECTED; })[0];
+          if (ln && ln.panel === "rsi") SELECTED = null;
+        }
+        syncToolCursor();
+      }
       syncToggles();
       const meta = draw(MODE);
       if (opts && opts.focus && groupRsi) {
@@ -1481,8 +1665,25 @@
       return PANELS;
     }
     function toggleRsi() { setRsi(!PANELS.showRsi); }
+    function setLine(on, opts) {
+      TOOL = !!on;
+      PENDING = null;
+      if (TOOL) { SELECTED = null; HOVER = null; }
+      syncToolCursor();
+      syncToggles();
+      drawOverlay();
+      if (opts && opts.focus && groupLine) {
+        const el = groupLine.querySelector("button");
+        if (el) el.focus();
+      }
+    }
+    function toggleLine() { setLine(!TOOL); }
+
     function setMode(mode, opts) {
       MODE = mode === "price" ? "price" : "relative";
+      PENDING = null;
+      SELECTED = null;
+      syncToolCursor();
       syncToggles();
       const meta = draw(MODE);
       if (opts && opts.focus) {
@@ -1555,6 +1756,7 @@
       // The crosshair lives on its own overlay, so it never gets in here.
       layout.view = resolveView(DATA);
       layout.style = STYLE;
+      layout.drawings = currentLines();
       // Same plot bottom as Regular, so the zone key gets a clear row under the years.
       if (mode !== "price") layout.B = 488;
       layout.share = true;
@@ -1678,6 +1880,19 @@
         toggleRsi();
       });
     }
+    if (groupLine) {
+      groupLine.addEventListener("click", function (e) {
+        if (!e.target.closest("button")) return;
+        toggleLine();
+      });
+    }
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+      if (PENDING) { PENDING = null; drawOverlay(); return; }
+      if (TOOL) { setLine(false); return; }
+      if (SELECTED) { SELECTED = null; syncToolCursor(); drawOverlay(); }
+    });
 
     // ---- Crosshair overlay (on-page only; Share renders off-screen) ----
     const overlay = document.createElement("canvas");
@@ -1720,8 +1935,12 @@
       const x = overlay.getContext("2d");
       x.setTransform(1, 0, 0, 1, 0, 0);
       x.clearRect(0, 0, overlay.width, overlay.height);
-      const q = (HOVER != null && META) ? nearestPt(HOVER) : null;
-      if (!q) { overlay.hidden = true; return; }
+      DEL_RECT = null;
+      const hasSel = !!(SELECTED || PENDING);
+      // While the Line tool is armed (or a line is pending), hide the
+      // crosshair so it cannot steal the second tap.
+      const q = (!TOOL && !PENDING && HOVER != null && META) ? nearestPt(HOVER) : null;
+      if (!q && !hasSel) { overlay.hidden = true; return; }
       overlay.hidden = false;
       const ST = LAYOUT;
       x.setTransform(ST.dpr, 0, 0, ST.dpr, 0, 0);
@@ -1744,7 +1963,7 @@
           x.strokeStyle = INK; x.stroke();
         }
         if (META.showRsi && q.rsi != null && isFinite(q.rsi)) {
-          const ry = rsiYAt(q.rsi, META.rsiT, META.rsiB);
+          const ry = rsiYAt(q.rsi, META.rsiT, META.rsiB, META.rsiLo, META.rsiHi);
           if (ry >= META.rsiT && ry <= META.rsiB) {
             x.beginPath();
             x.arc(q.cx, ry, ST.mobile ? 3 : 4, 0, Math.PI * 2);
@@ -1796,6 +2015,52 @@
           x.fillText(rw[1], bx + bw - pad, ty);
         });
       }
+      if (PENDING && META) {
+        const clip = panelClip(PENDING.panel, META);
+        const x0 = timeToX(PENDING.t, META);
+        const y0 = valueToY(PENDING.v, PENDING.panel, META);
+        const x1 = PENDING.hx != null ? PENDING.hx : x0;
+        const y1 = PENDING.hy != null ? PENDING.hy : y0;
+        x.save();
+        x.beginPath();
+        x.rect(META.L, clip.T, Math.max(0, META.Rx - META.L), Math.max(0, clip.B - clip.T));
+        x.clip();
+        x.strokeStyle = "rgba(230,232,235,0.9)";
+        x.lineWidth = ST.mobile ? 1.7 : 2;
+        x.lineCap = "round";
+        x.setLineDash(ST.mobile ? [5, 4] : [6, 5]);
+        x.beginPath();
+        x.moveTo(x0, y0);
+        x.lineTo(x1, y1);
+        x.stroke();
+        x.setLineDash([]);
+        x.beginPath();
+        x.arc(x0, y0, ST.mobile ? 4 : 4.5, 0, Math.PI * 2);
+        x.fillStyle = BG; x.fill();
+        x.lineWidth = 1.5; x.strokeStyle = INK; x.stroke();
+        x.restore();
+      }
+      if (SELECTED && META) {
+        const ln = currentLines().filter(function (q) { return q.id === SELECTED; })[0];
+        if (ln && !((ln.panel === "rsi" && !META.showRsi) || (ln.panel === "price" && !META.showPrice))) {
+          const ends = lineEnds(ln, META);
+          const clip = panelClip(ln.panel, META);
+          x.save();
+          x.beginPath();
+          x.rect(META.L, clip.T, Math.max(0, META.Rx - META.L), Math.max(0, clip.B - clip.T));
+          x.clip();
+          x.strokeStyle = INK;
+          x.lineWidth = ST.mobile ? 2.1 : 2.3;
+          x.lineCap = "round";
+          x.beginPath();
+          x.moveTo(ends.x0, ends.y0);
+          x.lineTo(ends.x1, ends.y1);
+          x.stroke();
+          x.restore();
+          DEL_RECT = delButtonPos(ends, META, ST);
+          drawDeleteBtn(x, DEL_RECT);
+        }
+      }
     }
 
     // ---- Zoom and pan ----
@@ -1845,6 +2110,30 @@
     function inPlot(u) {
       return META && u.x >= META.L && u.x <= META.Rx && u.y >= plotTop() - 4 && u.y <= plotBot() + 4;
     }
+    function panelAt(y) {
+      if (!META) return null;
+      if (META.showPrice && y >= META.T - 10 && y <= META.B + 10) return "price";
+      if (META.showRsi && y >= META.rsiT - 10 && y <= META.rsiB + 10) return "rsi";
+      return null;
+    }
+    function hitDelete(u) {
+      if (!DEL_RECT) return false;
+      const tol = (LAYOUT && LAYOUT.mobile) ? Math.max(24, DEL_RECT.r) : DEL_RECT.r + 4;
+      return Math.abs(u.x - DEL_RECT.x) <= tol && Math.abs(u.y - DEL_RECT.y) <= tol;
+    }
+    function hitLine(u) {
+      if (!META) return null;
+      const thresh = (LAYOUT && LAYOUT.mobile) ? 24 : 10;
+      let best = null, bd = thresh;
+      currentLines().forEach(function (ln) {
+        if (ln.panel === "price" && !META.showPrice) return;
+        if (ln.panel === "rsi" && !META.showRsi) return;
+        const ends = lineEnds(ln, META);
+        const d = distToSeg(u.x, u.y, ends.x0, ends.y0, ends.x1, ends.y1);
+        if (d <= bd) { bd = d; best = ln; }
+      });
+      return best;
+    }
 
     canvas.addEventListener("wheel", function (e) {
       // Plain wheel / trackpad scroll scrolls the page. Zoom needs Ctrl or
@@ -1864,14 +2153,67 @@
       if (e.pointerType === "mouse" && e.button !== 0) return;
       const u = toUnits(e.clientX, e.clientY);
       ptrs.set(e.pointerId, { x: u.x, y: u.y });
-      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (hitDelete(u)) {
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        setLines(currentLines().filter(function (q) { return q.id !== SELECTED; }));
+        SELECTED = null;
+        syncToolCursor();
+        e.preventDefault();
+        draw(MODE);
+        return;
+      }
+      if (TOOL && META) {
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        const pan = panelAt(u.y);
+        e.preventDefault();
+        if (!pan || u.x < META.L || u.x > META.Rx) return;
+        const t = xToTime(u.x, META), v = yToValue(u.y, pan, META);
+        if (!PENDING || PENDING.panel !== pan) {
+          PENDING = { panel: pan, t: t, v: v, hx: u.x, hy: u.y };
+          syncToolCursor();
+          drawOverlay();
+          return;
+        }
+        // Ignore a second tap that lands on the start so a fat finger
+        // does not commit a zero-length line.
+        if (Math.hypot(timeToX(PENDING.t, META) - u.x, valueToY(PENDING.v, pan, META) - u.y) < 8) {
+          return;
+        }
+        const ln = { id: newDrawId(), kind: "trend", panel: pan, t0: PENDING.t, v0: PENDING.v, t1: t, v1: v };
+        const arr = currentLines(); arr.push(ln); setLines(arr);
+        PENDING = null;
+        TOOL = false;
+        SELECTED = null;
+        HOVER = null;
+        syncToolCursor();
+        syncToggles();
+        draw(MODE);
+        return;
+      }
+      const hit = hitLine(u);
+      if (hit) {
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        SELECTED = hit.id;
+        HOVER = null;
+        syncToolCursor();
+        e.preventDefault();
+        drawOverlay();
+        return;
+      }
+      if (SELECTED) {
+        SELECTED = null;
+        syncToolCursor();
+        drawOverlay();
+      }
+      // Do not capture the pointer here: that used to steal vertical
+      // scrolling on mobile when the tool was not armed.
       if (e.pointerType === "mouse") {
         if (!inPlot(u)) return;
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
         drag = { x: u.x, v: curView(), moved: false };
         canvas.classList.add("is-dragging");
         e.preventDefault();
       } else if (ptrs.size === 1) {
-        // Touch / pen: one finger shows and scrubs the crosshair.
         HOVER = u.x; drawOverlay();
       } else if (ptrs.size === 2) {
         const a = Array.from(ptrs.values());
@@ -1887,6 +2229,18 @@
     canvas.addEventListener("pointermove", function (e) {
       const u = toUnits(e.clientX, e.clientY);
       if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: u.x, y: u.y });
+      if (PENDING && META) {
+        const clip = panelClip(PENDING.panel, META);
+        PENDING.hx = Math.max(META.L, Math.min(META.Rx, u.x));
+        PENDING.hy = Math.max(clip.T, Math.min(clip.B, u.y));
+        if (TOOL) e.preventDefault();
+        drawOverlay();
+        return;
+      }
+      if (TOOL) {
+        e.preventDefault();
+        return;
+      }
       if (e.pointerType === "mouse") {
         if (drag) {
           const dx = u.x - drag.x;
@@ -1924,7 +2278,7 @@
       if (e.pointerType === "mouse") {
         drag = null;
         canvas.classList.remove("is-dragging");
-      } else if (e.type === "pointercancel") {
+      } else if (e.type === "pointercancel" && !TOOL && !PENDING) {
         // The page took the gesture (vertical scroll): drop the crosshair.
         HOVER = null; drawOverlay();
       }
@@ -1932,9 +2286,20 @@
     canvas.addEventListener("pointerup", endPtr);
     canvas.addEventListener("pointercancel", endPtr);
     canvas.addEventListener("pointerleave", function (e) {
-      if (e.pointerType === "mouse" && !drag) { HOVER = null; drawOverlay(); }
+      if (e.pointerType === "mouse" && !drag) {
+        if (!PENDING) HOVER = null;
+        drawOverlay();
+      }
     });
-    canvas.addEventListener("dblclick", function () { setRange("all"); });
+    canvas.addEventListener("dblclick", function () { if (!TOOL && !PENDING) setRange("all"); });
+    // Block iOS page-scroll while the tool is armed, including the gap
+    // between the two taps. Leave other touches to touch-action: pan-y.
+    canvas.addEventListener("touchstart", function (e) {
+      if (TOOL || PENDING) e.preventDefault();
+    }, { passive: false });
+    canvas.addEventListener("touchmove", function (e) {
+      if (TOOL || PENDING) e.preventDefault();
+    }, { passive: false });
     // Tap anywhere else hides a touch crosshair.
     document.addEventListener("pointerdown", function (e) {
       if (HOVER != null && e.target !== canvas) { HOVER = null; drawOverlay(); }
@@ -1973,6 +2338,13 @@
       setRsi: setRsi,
       setPanels: setPanels,
       getPanels: function () { return { showPrice: true, showRsi: PANELS.showRsi }; },
+      setLine: setLine,
+      getTool: function () { return TOOL ? "line" : null; },
+      getDrawings: function () { return currentLines(); },
+      setDrawings: function (arr) { setLines(arr || []); SELECTED = null; PENDING = null; draw(MODE); },
+      getSelected: function () { return SELECTED; },
+      selectDrawing: function (id) { SELECTED = id || null; syncToolCursor(); drawOverlay(); },
+      getDelRect: function () { return DEL_RECT; },
       draw: draw,
       onResize: onResize,
       exportPng: function (mode, tf) { return renderShareCanvas(mode || MODE, tf || TF).toDataURL("image/png"); },
