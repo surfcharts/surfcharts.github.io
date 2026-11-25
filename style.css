@@ -525,7 +525,7 @@ body.share-only .wave-line { display: none; }
 .info h2{font-size:17px}
 .info .disclaimer{line-height:1.45}
 
-/* Chart tools: style, panels, drawing tools, visible range */
+/* Chart tools: style, panels, visible range */
 .chart-tools {
   display: flex;
   justify-content: space-between;
@@ -560,7 +560,6 @@ body.share-only .wave-line { display: none; }
 .stage { position: relative; }
 .stage canvas { touch-action: pan-y; cursor: crosshair; }
 .stage canvas.is-dragging { cursor: grabbing; }
-.stage canvas.is-drawing { cursor: crosshair; touch-action: none; }
 .stage canvas.xhair {
   position: absolute;
   pointer-events: none;

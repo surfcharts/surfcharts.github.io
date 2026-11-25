@@ -605,7 +605,6 @@
     return out;
   }
   const RSI_GAP_DESKTOP = 20, RSI_GAP_MOBILE = 16;
-  const DRAW_LS_KEY = "surfcharts-drawings-v1";
 
   function applyPanelLayout(layout, panels) {
     const showPrice = !panels || panels.showPrice !== false;
@@ -640,19 +639,6 @@
     return layout;
   }
 
-  function loadDrawStore() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(DRAW_LS_KEY) || "{}");
-      return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    } catch (e) { return {}; }
-  }
-  function saveDrawStore(store) {
-    try { localStorage.setItem(DRAW_LS_KEY, JSON.stringify(store)); } catch (e) { /* quota / private */ }
-  }
-  function newDrawId() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  }
-
   function rsiPad(rT, rB) {
     const h = Math.max(1, rB - rT);
     return Math.max(8, Math.min(18, Math.round(h * 0.09)));
@@ -662,13 +648,6 @@
     const top = rT + pad, bot = rB - pad;
     return top + ((100 - v) / 100) * (bot - top);
   }
-  function rsiAtY(py, rT, rB) {
-    const pad = rsiPad(rT, rB);
-    const top = rT + pad, bot = rB - pad;
-    if (!(bot > top)) return 50;
-    return 100 * (bot - py) / (bot - top);
-  }
-
   function drawZonedRsi(x, pts, ST, L, Rx, rT, rB) {
     const usable = pts.filter(function (q) { return q.rsi != null && isFinite(q.rsi); });
     if (usable.length < 2) return;
@@ -715,120 +694,6 @@
     x.fillStyle = "rgba(18,22,28,0.72)";
     x.fillRect(tx - 3, ty - (ST.mobile ? 10 : 12), tw + 6, ST.mobile ? 13 : 16);
     Tx(tag, tx, ty, SMA_C, "left");
-  }
-
-  function lineEnds(ln, meta) {
-    const L = meta.L, Rx = meta.Rx;
-    if (ln.kind === "horiz") {
-      const y = valueToY(ln.v0, ln.panel, meta);
-      return { x0: L, y0: y, x1: Rx, y1: y };
-    }
-    return {
-      x0: timeToX(ln.t0, meta), y0: valueToY(ln.v0, ln.panel, meta),
-      x1: timeToX(ln.t1, meta), y1: valueToY(ln.v1, ln.panel, meta),
-    };
-  }
-  function timeToX(t, meta) {
-    return meta.L + ((t - meta.t0) / (meta.t1 - meta.t0)) * (meta.Rx - meta.L);
-  }
-  function xToTime(px, meta) {
-    return meta.t0 + ((px - meta.L) / (meta.Rx - meta.L)) * (meta.t1 - meta.t0);
-  }
-  function valueToY(v, panel, meta) {
-    if (panel === "rsi") return rsiYAt(v, meta.rsiT, meta.rsiB);
-    const T = meta.T, B = meta.B;
-    const l1 = Math.log10(meta.top), l0 = Math.log10(meta.bot);
-    return T + ((l1 - Math.log10(Math.max(v, 1e-12))) / (l1 - l0)) * (B - T);
-  }
-  function yToValue(py, panel, meta) {
-    if (panel === "rsi") {
-      return Math.max(0, Math.min(100, rsiAtY(py, meta.rsiT, meta.rsiB)));
-    }
-    const T = meta.T, B = meta.B;
-    const l1 = Math.log10(meta.top), l0 = Math.log10(meta.bot);
-    const frac = (py - T) / (B - T);
-    return Math.pow(10, l1 - frac * (l1 - l0));
-  }
-  function panelClip(panel, meta) {
-    if (panel === "rsi") return { T: meta.rsiT, B: meta.rsiB };
-    return { T: meta.T, B: meta.B };
-  }
-  function distToSeg(px, py, x0, y0, x1, y1) {
-    const dx = x1 - x0, dy = y1 - y0;
-    const len2 = dx * dx + dy * dy;
-    let t = len2 > 0 ? ((px - x0) * dx + (py - y0) * dy) / len2 : 0;
-    t = Math.max(0, Math.min(1, t));
-    const x = x0 + t * dx, y = y0 + t * dy;
-    return Math.hypot(px - x, py - y);
-  }
-  function delButtonPos(ends, meta) {
-    const mx = (ends.x0 + ends.x1) / 2;
-    const my = (ends.y0 + ends.y1) / 2;
-    const clip = { T: Math.min(ends.y0, ends.y1), B: Math.max(ends.y0, ends.y1) };
-    const r = 9;
-    let x = Math.max(meta.L + r + 2, Math.min(meta.Rx - r - 2, mx));
-    let y = my - 16;
-    const top = meta.showPrice && meta.showRsi
-      ? Math.min(meta.T, meta.rsiT)
-      : (meta.showRsi ? meta.rsiT : meta.T);
-    if (y < top + r + 2) y = my + 16;
-    return { x: x, y: y, r: r };
-  }
-  function drawCommittedLines(x, lines, meta, ST, selectedId, withDelete) {
-    if (!lines || !lines.length || !meta) return null;
-    let del = null;
-    lines.forEach(function (ln) {
-      if (ln.panel === "price" && !meta.showPrice) return;
-      if (ln.panel === "rsi" && !meta.showRsi) return;
-      const ends = lineEnds(ln, meta);
-      const clip = panelClip(ln.panel, meta);
-      const selected = withDelete && selectedId && ln.id === selectedId;
-      x.save();
-      x.beginPath();
-      x.rect(meta.L, clip.T, Math.max(0, meta.Rx - meta.L), Math.max(0, clip.B - clip.T));
-      x.clip();
-      x.strokeStyle = selected ? INK : GREY;
-      x.lineWidth = selected ? (ST.mobile ? 1.6 : 1.85) : (ST.mobile ? 1.25 : 1.45);
-      x.lineCap = "round";
-      x.beginPath();
-      x.moveTo(ends.x0, ends.y0);
-      x.lineTo(ends.x1, ends.y1);
-      x.stroke();
-      x.restore();
-      if (selected) {
-        const pr = ST.mobile ? 4.5 : 5;
-        [0, 1].forEach(function (i) {
-          const px = i ? ends.x1 : ends.x0, py = i ? ends.y1 : ends.y0;
-          if (py < clip.T - 1 || py > clip.B + 1) return;
-          x.beginPath();
-          x.arc(px, py, pr, 0, Math.PI * 2);
-          x.fillStyle = BG; x.fill();
-          x.lineWidth = 1.5; x.strokeStyle = INK; x.stroke();
-        });
-        del = delButtonPos(ends, meta);
-      }
-    });
-    return del;
-  }
-  function drawDeleteBtn(x, del) {
-    if (!del) return;
-    x.save();
-    x.beginPath();
-    if (x.roundRect) x.roundRect(del.x - del.r, del.y - del.r, del.r * 2, del.r * 2, 4);
-    else x.rect(del.x - del.r, del.y - del.r, del.r * 2, del.r * 2);
-    x.fillStyle = "rgba(18,22,28,0.94)";
-    x.strokeStyle = "#3a4450";
-    x.lineWidth = 1;
-    x.fill(); x.stroke();
-    x.strokeStyle = INK;
-    x.lineWidth = 1.4;
-    x.lineCap = "round";
-    const s = del.r * 0.38;
-    x.beginPath();
-    x.moveTo(del.x - s, del.y - s); x.lineTo(del.x + s, del.y + s);
-    x.moveTo(del.x + s, del.y - s); x.lineTo(del.x - s, del.y + s);
-    x.stroke();
-    x.restore();
   }
 
   // Weekly high-low bars, coloured by exact depth and split at 1× and 2×.
@@ -1343,18 +1208,6 @@
     last.zone = zNow;
     last.lw = ST.lw;
 
-    const metaNow = {
-      L: L, Rx: Rx, T: T, B: B, axisB: axisB,
-      showPrice: showPrice, showRsi: showRsi,
-      rsiT: ST.rsiT, rsiB: ST.rsiB,
-      top: top, bot: bot, t0: tStart, t1: tEnd,
-    };
-    // Committed drawings go on the chart (and on Share). The selected
-    // delete button is overlay-only, so it never appears on the PNG.
-    if (ST.drawings && ST.drawings.length) {
-      drawCommittedLines(x, ST.drawings, metaNow, ST, null, false);
-    }
-
     x.fillStyle = "#2c333d";
     x.fillRect(Pd, ST.ny, Wd - 2 * Pd, 1);
 
@@ -1414,7 +1267,6 @@
     const groupStyle = root.querySelector(".toggle-style");
     const groupRange = root.querySelector(".toggle-range");
     const groupPanels = root.querySelector(".toggle-panels");
-    const groupTools = root.querySelector(".toggle-tools");
     const shareBtn = root.querySelector(".share");
     let MODE = START;
     let TF = START_TF;
@@ -1427,25 +1279,6 @@
     let META = null, LAYOUT = null;
     let HOVER = null; // crosshair x in layout units, or null
     let PANELS = { showPrice: START_PANELS.showPrice, showRsi: START_PANELS.showRsi };
-    let TOOL = null; // "trend" | "horiz" | null (select / pan)
-    let SELECTED = null;
-    let PENDING = null; // first point of an in-progress trend line
-    let HANDLE = null; // { id, end: 0|1, panel }
-    let DEL_RECT = null;
-    const DRAW_STORE = loadDrawStore();
-    function storeKey() { return COIN.id + ":" + (MODE === "price" ? "price" : "relative"); }
-    function currentLines() { return (DRAW_STORE[storeKey()] || []).slice(); }
-    function setLines(arr) {
-      DRAW_STORE[storeKey()] = arr;
-      saveDrawStore(DRAW_STORE);
-    }
-    function syncToolCursor() {
-      if (HANDLE) canvas.classList.add("is-dragging");
-      else canvas.classList.remove("is-dragging");
-      if (TOOL) canvas.classList.add("is-drawing");
-      else canvas.classList.remove("is-drawing");
-      canvas.style.touchAction = (TOOL || HANDLE) ? "none" : "";
-    }
 
     function activeData() { return datas[TF] || datas.weekly; }
 
@@ -1531,7 +1364,6 @@
       const DATA = activeData();
       layout.view = resolveView(DATA);
       layout.style = STYLE;
-      layout.drawings = currentLines();
       const meta = drawInto(x, mode, layout, DATA, def);
       META = meta; LAYOUT = layout;
       drawOverlay();
@@ -1600,12 +1432,6 @@
           b.setAttribute("aria-pressed", on ? "true" : "false");
         });
       }
-      if (groupTools) {
-        groupTools.querySelectorAll("[data-tool]").forEach(function (b) {
-          b.setAttribute("aria-checked", b.getAttribute("data-tool") === TOOL ? "true" : "false");
-        });
-      }
-      syncToolCursor();
     }
 
     function setStyle(style, opts) {
@@ -1647,13 +1473,6 @@
       } else return PANELS;
       if (!next.showPrice && !next.showRsi) return PANELS;
       PANELS = next;
-      if (SELECTED) {
-        const ln = currentLines().filter(function (q) { return q.id === SELECTED; })[0];
-        if (ln && ((ln.panel === "price" && !PANELS.showPrice) || (ln.panel === "rsi" && !PANELS.showRsi))) {
-          SELECTED = null;
-        }
-      }
-      PENDING = null;
       syncToggles();
       const meta = draw(MODE);
       if (opts && opts.focus && groupPanels) {
@@ -1669,24 +1488,8 @@
       if (!next.showPrice && !next.showRsi) return; // keep at least one on
       setPanels(next);
     }
-    function setTool(tool, opts) {
-      const t = tool === "trend" || tool === "horiz" ? tool : null;
-      TOOL = TOOL === t ? null : t;
-      PENDING = null;
-      syncToggles();
-      drawOverlay();
-      if (opts && opts.focus && groupTools) {
-        const el = groupTools.querySelector('[data-tool="' + (TOOL || "trend") + '"]');
-        if (el) el.focus();
-      }
-      return TOOL;
-    }
-
     function setMode(mode, opts) {
       MODE = mode === "price" ? "price" : "relative";
-      SELECTED = null;
-      PENDING = null;
-      HANDLE = null;
       syncToggles();
       const meta = draw(MODE);
       if (opts && opts.focus) {
@@ -1779,7 +1582,6 @@
       layout.ny += SHARE_PLOT_SHIFT + keyShift;
       layout.H += SHARE_PLOT_SHIFT + keyShift;
       applyPanelLayout(layout, PANELS);
-      layout.drawings = currentLines();
       const off = document.createElement("canvas");
       off.width = SHARE_W * SHARE_D;
       off.height = layout.H * SHARE_D;
@@ -1888,39 +1690,6 @@
         togglePanel(b.getAttribute("data-panel"));
       });
     }
-    if (groupTools) {
-      groupTools.addEventListener("click", function (e) {
-        const b = e.target.closest("[data-tool]");
-        if (!b) return;
-        setTool(b.getAttribute("data-tool"));
-      });
-      groupTools.addEventListener("keydown", function (e) {
-        if (e.key === "Escape") { setTool(null); return; }
-        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].indexOf(e.key) < 0) return;
-        e.preventDefault();
-        const vals = ["trend", "horiz"];
-        let i = vals.indexOf(TOOL);
-        if (e.key === "Home") i = 0;
-        else if (e.key === "End") i = vals.length - 1;
-        else if (e.key === "ArrowLeft" || e.key === "ArrowUp") i = (Math.max(i, 0) - 1 + vals.length) % vals.length;
-        else i = (i + 1) % vals.length;
-        TOOL = null;
-        setTool(vals[i], { focus: true });
-      });
-    }
-    document.addEventListener("keydown", function (e) {
-      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
-      if (e.key === "Escape") {
-        if (PENDING) { PENDING = null; drawOverlay(); return; }
-        if (TOOL) { setTool(null); return; }
-        if (SELECTED) { SELECTED = null; drawOverlay(); }
-      } else if ((e.key === "Delete" || e.key === "Backspace") && SELECTED) {
-        e.preventDefault();
-        setLines(currentLines().filter(function (q) { return q.id !== SELECTED; }));
-        SELECTED = null;
-        draw(MODE);
-      }
-    });
 
     // ---- Crosshair overlay (on-page only; Share renders off-screen) ----
     const overlay = document.createElement("canvas");
@@ -1963,14 +1732,12 @@
       const x = overlay.getContext("2d");
       x.setTransform(1, 0, 0, 1, 0, 0);
       x.clearRect(0, 0, overlay.width, overlay.height);
-      DEL_RECT = null;
-      const hasSel = !!(SELECTED || PENDING);
       const q = (HOVER != null && META) ? nearestPt(HOVER) : null;
-      if (!q && !hasSel) { overlay.hidden = true; return; }
+      if (!q) { overlay.hidden = true; return; }
       overlay.hidden = false;
       const ST = LAYOUT;
       x.setTransform(ST.dpr, 0, 0, ST.dpr, 0, 0);
-      if (q && !HANDLE && !TOOL) {
+      if (q) {
         const L = META.L, Rx = META.Rx;
         const top = plotTop(), bot = plotBot();
         const cx = Math.round(q.cx * ST.dpr) / ST.dpr + 0.5 / ST.dpr;
@@ -2041,32 +1808,9 @@
           x.fillText(rw[1], bx + bw - pad, ty);
         });
       }
-      if (PENDING && META && HOVER != null) {
-        const x1 = Math.max(META.L, Math.min(META.Rx, HOVER));
-        const y1 = PENDING.hy != null ? PENDING.hy : valueToY(PENDING.v, PENDING.panel, META);
-        const x0 = timeToX(PENDING.t, META), y0 = valueToY(PENDING.v, PENDING.panel, META);
-        x.save();
-        const clip = panelClip(PENDING.panel, META);
-        x.beginPath();
-        x.rect(META.L, clip.T, Math.max(0, META.Rx - META.L), Math.max(0, clip.B - clip.T));
-        x.clip();
-        x.strokeStyle = GREY;
-        x.lineWidth = ST.mobile ? 1.25 : 1.45;
-        x.setLineDash([5, 4]);
-        x.beginPath(); x.moveTo(x0, y0); x.lineTo(x1, y1); x.stroke();
-        x.setLineDash([]);
-        x.beginPath(); x.arc(x0, y0, 4, 0, Math.PI * 2);
-        x.fillStyle = BG; x.fill(); x.strokeStyle = INK; x.lineWidth = 1.5; x.stroke();
-        x.restore();
-      }
-      if (SELECTED && META) {
-        const sel = currentLines().filter(function (q) { return q.id === SELECTED; });
-        DEL_RECT = drawCommittedLines(x, sel, META, ST, SELECTED, true);
-        drawDeleteBtn(x, DEL_RECT);
-      }
     }
 
-    // ---- Zoom, pan, and drawing tools ----
+    // ---- Zoom and pan ----
     let raf = 0;
     function redrawSoon() {
       if (raf) return;
@@ -2113,41 +1857,6 @@
     function inPlot(u) {
       return META && u.x >= META.L && u.x <= META.Rx && u.y >= plotTop() - 4 && u.y <= plotBot() + 4;
     }
-    function panelAt(y) {
-      if (!META) return null;
-      if (META.showPrice && y >= META.T - 6 && y <= META.B + 6) return "price";
-      if (META.showRsi && y >= META.rsiT - 6 && y <= META.rsiB + 6) return "rsi";
-      return null;
-    }
-    function hitDelete(u) {
-      if (!DEL_RECT) return false;
-      return Math.abs(u.x - DEL_RECT.x) <= DEL_RECT.r + 3 && Math.abs(u.y - DEL_RECT.y) <= DEL_RECT.r + 3;
-    }
-    function hitHandle(u) {
-      if (!SELECTED || !META) return null;
-      const ln = currentLines().filter(function (q) { return q.id === SELECTED; })[0];
-      if (!ln) return null;
-      if (ln.panel === "price" && !META.showPrice) return null;
-      if (ln.panel === "rsi" && !META.showRsi) return null;
-      const ends = lineEnds(ln, META);
-      const rad = (LAYOUT && LAYOUT.mobile) ? 14 : 10;
-      if (Math.hypot(u.x - ends.x0, u.y - ends.y0) <= rad) return { id: ln.id, end: 0, panel: ln.panel };
-      if (Math.hypot(u.x - ends.x1, u.y - ends.y1) <= rad) return { id: ln.id, end: 1, panel: ln.panel };
-      return null;
-    }
-    function hitLine(u) {
-      if (!META) return null;
-      const thresh = (LAYOUT && LAYOUT.mobile) ? 14 : 8;
-      let best = null, bd = thresh;
-      currentLines().forEach(function (ln) {
-        if (ln.panel === "price" && !META.showPrice) return;
-        if (ln.panel === "rsi" && !META.showRsi) return;
-        const ends = lineEnds(ln, META);
-        const d = distToSeg(u.x, u.y, ends.x0, ends.y0, ends.x1, ends.y1);
-        if (d <= bd) { bd = d; best = ln; }
-      });
-      return best;
-    }
 
     canvas.addEventListener("wheel", function (e) {
       // Plain wheel / trackpad scroll scrolls the page. Zoom needs Ctrl or
@@ -2162,76 +1871,14 @@
     }, { passive: false });
 
     const ptrs = new Map();
-    let drag = null, pinch = null, drawAct = null;
+    let drag = null, pinch = null;
     canvas.addEventListener("pointerdown", function (e) {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       const u = toUnits(e.clientX, e.clientY);
       ptrs.set(e.pointerId, { x: u.x, y: u.y });
       try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-      if (hitDelete(u)) {
-        setLines(currentLines().filter(function (q) { return q.id !== SELECTED; }));
-        SELECTED = null;
-        drawAct = "delete";
-        e.preventDefault();
-        draw(MODE);
-        return;
-      }
-      const h = hitHandle(u);
-      if (h) {
-        HANDLE = h;
-        drawAct = "handle";
-        HOVER = null;
-        syncToolCursor();
-        e.preventDefault();
-        return;
-      }
-      const pan = panelAt(u.y);
-      if (TOOL === "horiz" && pan && META && u.x >= META.L && u.x <= META.Rx) {
-        const v = yToValue(u.y, pan, META);
-        const ln = { id: newDrawId(), kind: "horiz", panel: pan, t0: META.t0, t1: META.t1, v0: v, v1: v };
-        const arr = currentLines(); arr.push(ln); setLines(arr);
-        SELECTED = ln.id;
-        PENDING = null;
-        drawAct = "place";
-        e.preventDefault();
-        draw(MODE);
-        return;
-      }
-      if (TOOL === "trend" && pan && META && u.x >= META.L && u.x <= META.Rx) {
-        const t = xToTime(u.x, META), v = yToValue(u.y, pan, META);
-        if (!PENDING || PENDING.panel !== pan) {
-          PENDING = { panel: pan, t: t, v: v };
-          drawAct = "place";
-          e.preventDefault();
-          drawOverlay();
-          return;
-        }
-        if (Math.hypot(timeToX(PENDING.t, META) - u.x, valueToY(PENDING.v, pan, META) - u.y) < 4) {
-          drawAct = "place";
-          e.preventDefault();
-          return;
-        }
-        const ln = { id: newDrawId(), kind: "trend", panel: pan, t0: PENDING.t, v0: PENDING.v, t1: t, v1: v };
-        const arr = currentLines(); arr.push(ln); setLines(arr);
-        SELECTED = ln.id;
-        PENDING = null;
-        drawAct = "place";
-        e.preventDefault();
-        draw(MODE);
-        return;
-      }
-      const hit = hitLine(u);
-      if (hit) {
-        SELECTED = hit.id;
-        drawAct = "select";
-        HOVER = null;
-        e.preventDefault();
-        drawOverlay();
-        return;
-      }
-      if (SELECTED) { SELECTED = null; drawOverlay(); }
       if (e.pointerType === "mouse") {
-        if (!inPlot(u) || TOOL) return;
+        if (!inPlot(u)) return;
         drag = { x: u.x, v: curView(), moved: false };
         canvas.classList.add("is-dragging");
         e.preventDefault();
@@ -2252,32 +1899,6 @@
     canvas.addEventListener("pointermove", function (e) {
       const u = toUnits(e.clientX, e.clientY);
       if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: u.x, y: u.y });
-      if (HANDLE && META) {
-        const lines = currentLines();
-        let ln = null;
-        for (let i = 0; i < lines.length; i++) if (lines[i].id === HANDLE.id) ln = lines[i];
-        if (ln) {
-          const clip = panelClip(ln.panel, META);
-          const y = Math.max(clip.T, Math.min(clip.B, u.y));
-          const v = yToValue(y, ln.panel, META);
-          if (ln.kind === "horiz") { ln.v0 = v; ln.v1 = v; }
-          else {
-            const px = Math.max(META.L, Math.min(META.Rx, u.x));
-            const t = xToTime(px, META);
-            if (HANDLE.end === 0) { ln.t0 = t; ln.v0 = v; }
-            else { ln.t1 = t; ln.v1 = v; }
-          }
-          DRAW_STORE[storeKey()] = lines;
-          redrawSoon();
-        }
-        return;
-      }
-      if (PENDING) {
-        PENDING.hy = u.y;
-        HOVER = u.x;
-        drawOverlay();
-        return;
-      }
       if (e.pointerType === "mouse") {
         if (drag) {
           const dx = u.x - drag.x;
@@ -2312,13 +1933,6 @@
     function endPtr(e) {
       ptrs.delete(e.pointerId);
       if (ptrs.size < 2) pinch = null;
-      if (HANDLE) {
-        saveDrawStore(DRAW_STORE);
-        HANDLE = null;
-        syncToolCursor();
-        draw(MODE);
-      }
-      drawAct = null;
       if (e.pointerType === "mouse") {
         drag = null;
         canvas.classList.remove("is-dragging");
@@ -2330,9 +1944,9 @@
     canvas.addEventListener("pointerup", endPtr);
     canvas.addEventListener("pointercancel", endPtr);
     canvas.addEventListener("pointerleave", function (e) {
-      if (e.pointerType === "mouse" && !drag && !HANDLE) { HOVER = null; drawOverlay(); }
+      if (e.pointerType === "mouse" && !drag) { HOVER = null; drawOverlay(); }
     });
-    canvas.addEventListener("dblclick", function () { if (!TOOL && !PENDING) setRange("all"); });
+    canvas.addEventListener("dblclick", function () { setRange("all"); });
     // Tap anywhere else hides a touch crosshair.
     document.addEventListener("pointerdown", function (e) {
       if (HOVER != null && e.target !== canvas) { HOVER = null; drawOverlay(); }
@@ -2370,13 +1984,6 @@
       setHover: function (ux) { HOVER = ux; drawOverlay(); return nearestPt(ux); },
       setPanels: setPanels,
       getPanels: function () { return { showPrice: PANELS.showPrice, showRsi: PANELS.showRsi }; },
-      setTool: setTool,
-      getTool: function () { return TOOL; },
-      getDrawings: function () { return currentLines(); },
-      setDrawings: function (arr) { setLines(arr || []); SELECTED = null; PENDING = null; draw(MODE); },
-      selectDrawing: function (id) { SELECTED = id || null; drawOverlay(); return SELECTED; },
-      getSelected: function () { return SELECTED; },
-      getDelRect: function () { return DEL_RECT; },
       draw: draw,
       onResize: onResize,
       exportPng: function (mode, tf) { return renderShareCanvas(mode || MODE, tf || TF).toDataURL("image/png"); },
