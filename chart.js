@@ -73,15 +73,6 @@
             unit: "Price", liveUrl: BS + "dogeusd", liveSrc: "Bitstamp DOGEUSD",
             liveFallback: KK + "XDGUSD", liveFallbackSrc: "Kraken XDGUSD",
             liveFallback2: CB + "DOGE-USD/ticker", liveFallback2Src: "Coinbase DOGE-USD" },
-    dash: { id: "dash", name: "DASH", data: "data/dash-weekly.json",
-            monthly: "data/dash-monthly.json",
-            unit: "Price", liveUrl: KK + "DASHUSD", liveSrc: "Kraken DASHUSD",
-            liveFallback: CB + "DASH-USD/ticker", liveFallbackSrc: "Coinbase DASH-USD" },
-    zec:  { id: "zec",  name: "ZEC",  data: "data/zec-weekly.json",
-            monthly: "data/zec-monthly.json",
-            unit: "Price", liveUrl: BS + "zecusd", liveSrc: "Bitstamp ZECUSD",
-            liveFallback: KK + "ZECUSD", liveFallbackSrc: "Kraken ZECUSD",
-            liveFallback2: CB + "ZEC-USD/ticker", liveFallback2Src: "Coinbase ZEC-USD" },
     totales: { id: "totales", name: "TOTALES", data: "data/totales-weekly.json",
             monthly: "data/totales-monthly.json",
             unit: "Market cap", liveUrl: null, liveSrc: "" },
@@ -94,9 +85,6 @@
     total3es: { id: "total3es", name: "TOTAL3ES", data: "data/total3es-weekly.json",
             monthly: "data/total3es-monthly.json",
             unit: "Market cap", liveUrl: null, liveSrc: "" },
-    xmr:  { id: "xmr",  name: "XMR",  data: "data/xmr-weekly.json",
-            monthly: "data/xmr-monthly.json",
-            unit: "Price", liveUrl: KK + "XMRUSD", liveSrc: "Kraken XMRUSD" },
   };
 
   const Q = new URLSearchParams(location.search);
